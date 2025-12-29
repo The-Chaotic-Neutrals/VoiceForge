@@ -57,7 +57,6 @@ from pathlib import Path
 import threading
 import io
 
-import numpy as np
 import torch
 import torchaudio as ta
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -66,9 +65,6 @@ from pydantic import BaseModel
 import uvicorn
 
 # Chunking is done client-side in tts_service.py - servers receive pre-chunked text
-
-# Import config to get saved audio prompt path
-from config import get_config_value
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -87,11 +83,8 @@ MODEL_CACHE = {
     "model": None,
     "loaded": False,
     "sample_rate": None,
-    "warmed_up": False,  # Track if warmup inference has been done
 }
 _model_lock = threading.Lock()
-_generation_lock = threading.Lock()  # Lock for generation to prevent concurrent access to model.conds
-_async_generation_lock = asyncio.Lock()  # Async lock for streaming endpoints
 
 
 def get_model():
@@ -126,101 +119,6 @@ def get_model():
         return model
 
 
-def ensure_warmed_up(model, prompt_audio_path: str = None):
-    """Ensure the model has been warmed up with a test inference.
-    
-    On first call, runs a dummy inference to warm up CUDA kernels.
-    Uses the provided prompt audio, or falls back to config, or synthetic audio.
-    
-    Args:
-        model: The Chatterbox model
-        prompt_audio_path: Optional path to audio prompt. If not provided,
-                          uses chatterbox_prompt_path from config.
-    """
-    global MODEL_CACHE
-    
-    if MODEL_CACHE["warmed_up"]:
-        return
-    
-    with _model_lock:
-        # Double-check after acquiring lock
-        if MODEL_CACHE["warmed_up"]:
-            return
-        
-        # Try to get a real audio prompt for better warmup
-        warmup_path = prompt_audio_path
-        temp_warmup_file = None
-        
-        # If no path provided, try config
-        if not warmup_path:
-            warmup_path = get_config_value("chatterbox_prompt_path")
-            if warmup_path:
-                logger.info(f"Using audio prompt from config for warmup: {warmup_path}")
-        
-        # Validate the path exists and is long enough
-        if warmup_path and os.path.exists(warmup_path):
-            try:
-                waveform, sr = ta.load(warmup_path)
-                duration = waveform.shape[1] / sr
-                if duration < 5.0:
-                    logger.warning(f"Config audio prompt too short ({duration:.1f}s), using synthetic audio")
-                    warmup_path = None
-                else:
-                    logger.info(f"Warming up with real audio prompt ({duration:.1f}s)")
-            except Exception as e:
-                logger.warning(f"Failed to load config audio prompt: {e}, using synthetic audio")
-                warmup_path = None
-        else:
-            if warmup_path:
-                logger.warning(f"Config audio prompt not found: {warmup_path}, using synthetic audio")
-            warmup_path = None
-        
-        # Fallback: generate synthetic audio if no real prompt available
-        if not warmup_path:
-            logger.info("Auto-warming up model with synthetic audio...")
-            
-            duration = 5.5
-            sample_rate = model.sr
-            t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
-            # Create a simple 220Hz tone with harmonics to simulate speech-like content
-            warmup_audio = (
-                0.3 * np.sin(2 * np.pi * 220 * t) +  # fundamental
-                0.2 * np.sin(2 * np.pi * 440 * t) +  # 2nd harmonic
-                0.1 * np.sin(2 * np.pi * 660 * t)    # 3rd harmonic
-            ).astype(np.float32)
-            # Add amplitude envelope
-            envelope = np.ones_like(warmup_audio)
-            envelope[:int(0.1 * sample_rate)] = np.linspace(0, 1, int(0.1 * sample_rate))
-            envelope[-int(0.1 * sample_rate):] = np.linspace(1, 0, int(0.1 * sample_rate))
-            warmup_audio = warmup_audio * envelope * 0.5
-            
-            temp_warmup_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-            ta.save(temp_warmup_file, torch.from_numpy(warmup_audio).unsqueeze(0), sample_rate)
-            warmup_path = temp_warmup_file
-        
-        try:
-            with torch.inference_mode():
-                # Prepare conditionals once
-                model.prepare_conditionals(warmup_path)
-                # Then generate without re-preparing
-                _ = model.generate("Hello, this is a warmup test.")
-            
-            MODEL_CACHE["warmed_up"] = True
-            logger.info("Auto-warmup complete - first generation should now be clean")
-            
-        finally:
-            # Only delete if we created a temp file
-            if temp_warmup_file:
-                try:
-                    os.unlink(temp_warmup_file)
-                except:
-                    pass
-        
-        # Clear CUDA cache from warmup
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-
 @app.get("/health")
 async def health():
     """Health check endpoint."""
@@ -248,46 +146,19 @@ async def health():
     }
 
 
-class WarmupRequest(BaseModel):
-    prompt_audio_path: Optional[str] = None
-
-
 @app.post("/warmup")
-async def warmup(request: WarmupRequest = None):
-    """Pre-load the model and run a test inference to fully warm up.
-    
-    Args:
-        prompt_audio_path: Optional path to audio prompt for warmup.
-                          If not provided, uses chatterbox_prompt_path from config.
-                          Falls back to synthetic audio if neither available.
-    """
+async def warmup():
+    """Pre-load the Chatterbox model."""
     try:
         model = get_model()
-        
-        # Get prompt path from request or config
-        prompt_path = None
-        if request and request.prompt_audio_path:
-            prompt_path = request.prompt_audio_path
-        
-        ensure_warmed_up(model, prompt_path)
-        
-        # Report what we used for warmup
-        used_prompt = "synthetic audio"
-        if prompt_path and os.path.exists(prompt_path):
-            used_prompt = f"provided prompt: {os.path.basename(prompt_path)}"
-        else:
-            config_prompt = get_config_value("chatterbox_prompt_path")
-            if config_prompt and os.path.exists(config_prompt):
-                used_prompt = f"config prompt: {os.path.basename(config_prompt)}"
-        
         return {
             "status": "ok",
-            "message": f"Chatterbox-Turbo model loaded and warmed up with {used_prompt}",
+            "message": "Chatterbox-Turbo model loaded",
             "sample_rate": model.sr,
             "device": DEVICE
         }
     except Exception as e:
-        logger.error(f"Warmup failed: {e}")
+        logger.error(f"Model load failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -451,62 +322,53 @@ async def generate_tts_chunked(
             os.unlink(prompt_path)
             raise HTTPException(status_code=400, detail="No valid text to synthesize")
         
-        # Get model and ensure it's warmed up
+        # Get model
         model = get_model()
-        ensure_warmed_up(model)
         
         # Run generation in executor to not block the async event loop
         # This allows other requests to be received while GPU is busy
-        import asyncio
-        
         def do_generate():
             """Blocking generation - runs in thread pool executor."""
-            # Lock covers BOTH prepare_conditionals AND generate to prevent race conditions
-            # Without this, concurrent requests could corrupt model.conds
-            with _generation_lock:
-                logger.info(f"[{request_id}] Preparing voice conditionals from prompt audio...")
-                model.prepare_conditionals(prompt_path)
-                logger.info(f"[{request_id}] Voice conditionals ready")
+            # Generate each chunk - pass audio_prompt_path directly to generate() (official API)
+            all_audio = []
+            
+            for i, chunk in enumerate(chunks):
+                chunk_id = f"{request_id}-{i+1}"
+                logger.info(f"[{chunk_id}] Chunk {i+1}/{len(chunks)}: {chunk[:60]}...")
                 
-                # Generate each chunk
-                all_audio = []
+                t_chunk_start = time.perf_counter()
                 
-                for i, chunk in enumerate(chunks):
-                    chunk_id = f"{request_id}-{i+1}"
-                    logger.info(f"[{chunk_id}] Chunk {i+1}/{len(chunks)}: {chunk[:60]}...")
-                    
-                    t_chunk_start = time.perf_counter()
-                    
-                    # Set seed (increment for each chunk for variety while maintaining reproducibility)
-                    # -1 = random each time, 0 = no seeding, >0 = specific seed
-                    if seed == -1:
-                        chunk_seed = torch.randint(0, 2**31, (1,)).item() + i
-                    elif seed > 0:
-                        chunk_seed = seed + i
-                    else:
-                        chunk_seed = 0
-                    
-                    if chunk_seed > 0:
-                        torch.manual_seed(chunk_seed)
-                        if torch.cuda.is_available():
-                            torch.cuda.manual_seed(chunk_seed)
-                    
-                    # Generate with inference mode for better memory handling
-                    with torch.inference_mode():
-                        wav = model.generate(chunk)
-                    
-                    all_audio.append(wav)
-                    
-                    t_chunk_end = time.perf_counter()
-                    chunk_duration = wav.shape[1] / model.sr
-                    chunk_time = t_chunk_end - t_chunk_start
-                    logger.info(f"[{chunk_id}] Done: {chunk_duration:.1f}s audio in {chunk_time:.1f}s")
+                # Set seed (increment for each chunk for variety while maintaining reproducibility)
+                # -1 = random each time, 0 = no seeding, >0 = specific seed
+                if seed == -1:
+                    chunk_seed = torch.randint(0, 2**31, (1,)).item() + i
+                elif seed > 0:
+                    chunk_seed = seed + i
+                else:
+                    chunk_seed = 0
                 
-                return all_audio
+                if chunk_seed > 0:
+                    torch.manual_seed(chunk_seed)
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed(chunk_seed)
+                
+                # Generate with audio_prompt_path directly (official Chatterbox API)
+                with torch.inference_mode():
+                    wav = model.generate(chunk, audio_prompt_path=prompt_path)
+                
+                all_audio.append(wav)
+                
+                t_chunk_end = time.perf_counter()
+                chunk_duration = wav.shape[1] / model.sr
+                chunk_time = t_chunk_end - t_chunk_start
+                logger.info(f"[{chunk_id}] Done: {chunk_duration:.1f}s audio in {chunk_time:.1f}s")
+            
+            return all_audio
         
         # Run in executor so we don't block the event loop
         loop = asyncio.get_event_loop()
         all_audio = await loop.run_in_executor(None, do_generate)
+        logger.info(f"[{request_id}] Generation complete")
         
         # Concatenate all audio (outside the lock - we have our data)
         combined = torch.cat(all_audio, dim=1)
@@ -607,24 +469,17 @@ async def generate_tts_stream(
     
     async def generate_stream():
         """Generator that yields SSE events with audio chunks."""
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
         t_start = time.perf_counter()
         model = get_model()
-        ensure_warmed_up(model)
         sample_rate = model.sr
-        lock_acquired = False
+        
+        # Use executor to avoid blocking the async event loop during GPU work
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts_gen")
         
         try:
-            # Use ASYNC lock for streaming - ensures proper release even on client disconnect
-            # This prevents race conditions where concurrent requests corrupt model.conds
-            logger.info(f"[{request_id}] Waiting for generation lock...")
-            await _async_generation_lock.acquire()
-            lock_acquired = True
-            logger.info(f"[{request_id}] Lock acquired, preparing conditionals...")
-            
-            # Prepare conditionals under lock
-            model.prepare_conditionals(prompt_path)
-            logger.info(f"[{request_id}] Voice conditionals ready")
-            
             # Send initial event with metadata
             yield f"data: {json.dumps({'type': 'start', 'chunks': len(chunks), 'sample_rate': sample_rate})}\n\n"
             
@@ -642,14 +497,19 @@ async def generate_tts_stream(
                 else:
                     chunk_seed = 0
                 
-                if chunk_seed > 0:
-                    torch.manual_seed(chunk_seed)
-                    if torch.cuda.is_available():
-                        torch.cuda.manual_seed(chunk_seed)
+                def do_generate(text, prompt, seed_val):
+                    """Blocking TTS generation - runs in thread pool."""
+                    if seed_val > 0:
+                        torch.manual_seed(seed_val)
+                        if torch.cuda.is_available():
+                            torch.cuda.manual_seed(seed_val)
+                    with torch.inference_mode():
+                        return model.generate(text, audio_prompt_path=prompt)
                 
-                # Generate with inference mode
-                with torch.inference_mode():
-                    wav = model.generate(chunk)
+                # Run in executor to not block event loop
+                # Parallel GPU access has contention but smaller gaps between chunks
+                loop = asyncio.get_event_loop()
+                wav = await loop.run_in_executor(executor, do_generate, chunk, prompt_path, chunk_seed)
                 
                 # Convert to WAV bytes
                 wav_buffer = io.BytesIO()
@@ -674,11 +534,8 @@ async def generate_tts_stream(
             logger.error(f"[{request_id}] Stream error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
-            # ALWAYS release lock, even on client disconnect
-            if lock_acquired:
-                _async_generation_lock.release()
-                logger.info(f"[{request_id}] Generation lock released")
-            # Cleanup prompt file
+            # Cleanup
+            executor.shutdown(wait=False)
             try:
                 os.unlink(prompt_path)
             except:
@@ -707,9 +564,8 @@ if __name__ == "__main__":
         logger.info(f"Total VRAM: {total_vram:.1f}GB")
     
     if args.warmup:
-        logger.info("Warming up model with test inference...")
-        model = get_model()
-        ensure_warmed_up(model)
+        logger.info("Pre-loading model...")
+        get_model()
     
     uvicorn.run(app, host=args.host, port=args.port, timeout_keep_alive=3600)
 

@@ -63,7 +63,7 @@ PIPELINE_SAMPLE_RATE = 44100
 def resample_to_pipeline_rate(audio_path: str, request_id: str = None) -> str:
     """
     Resample audio to the pipeline's standard sample rate (44.1kHz).
-    Uses high-quality SoXr resampler for best quality.
+    Uses SoXr for high-quality resampling (same quality as ffmpeg's soxr).
     
     Args:
         audio_path: Path to input audio file
@@ -72,50 +72,41 @@ def resample_to_pipeline_rate(audio_path: str, request_id: str = None) -> str:
     Returns:
         Path to resampled audio file (or original if already at target rate)
     """
-    import subprocess
+    import soundfile as sf
+    import soxr
+    import numpy as np
     
-    # Check current sample rate
+    req_tag = f"[{request_id}] " if request_id else ""
+    
     try:
-        probe = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries", "stream=sample_rate",
-            "-of", "default=noprint_wrappers=1:nokey=1", audio_path
-        ], capture_output=True, text=True, check=True)
-        current_sr = int(float(probe.stdout.strip().split('\n')[0]))
+        # Read audio and check sample rate in one operation (no ffprobe needed)
+        data, current_sr = sf.read(audio_path, dtype='float32')
         
         # If already at target rate, return original
         if current_sr == PIPELINE_SAMPLE_RATE:
             return audio_path
-            
-    except Exception:
-        current_sr = 0  # Unknown, will resample anyway
-    
-    req_tag = f"[{request_id}] " if request_id else ""
-    print(f"{req_tag}Resampling {current_sr}Hz -> {PIPELINE_SAMPLE_RATE}Hz")
-    
-    # Create output file
-    fd, output_path = tempfile.mkstemp(suffix="_44k.wav")
-    os.close(fd)
-    
-    # Use SoXr resampler for high quality
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", audio_path,
-        "-af", f"aresample={PIPELINE_SAMPLE_RATE}:resampler=soxr:precision=28",
-        "-c:a", "pcm_s24le",  # 24-bit for quality
-        output_path
-    ]
-    
-    try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        
+        print(f"{req_tag}Resampling {current_sr}Hz -> {PIPELINE_SAMPLE_RATE}Hz (SoXr VHQ)")
+        
+        # Use SoXr with Very High Quality setting (same as ffmpeg precision=28)
+        resampled = soxr.resample(data, current_sr, PIPELINE_SAMPLE_RATE, quality='VHQ')
+        
+        # Create output file
+        fd, output_path = tempfile.mkstemp(suffix="_44k.wav")
+        os.close(fd)
+        
+        # Write resampled audio
+        sf.write(output_path, resampled.astype(np.float32), PIPELINE_SAMPLE_RATE)
         return output_path
-    except subprocess.CalledProcessError as e:
-        print(f"{req_tag}Resample failed: {e.stderr.decode() if e.stderr else e}")
+        
+    except Exception as e:
+        print(f"{req_tag}Resample failed: {e}, returning original")
         return audio_path  # Fall back to original
 
 
 def apply_output_volume(audio_path: str, volume: float, request_id: str = None) -> str:
     """
-    Apply output volume to audio file using FFmpeg.
+    Apply output volume to audio file using numpy (fast in-memory).
     
     Args:
         audio_path: Path to input audio file
@@ -125,46 +116,174 @@ def apply_output_volume(audio_path: str, volume: float, request_id: str = None) 
     Returns:
         Path to volume-adjusted audio file
     """
-    import shutil
+    import soundfile as sf
+    import numpy as np
     
     # If volume is 1.0, just return the original
     if abs(volume - 1.0) < 0.01:
         return audio_path
     
     req_tag = f"[{request_id}] " if request_id else ""
-    print(f"{req_tag}Applying output volume: {volume:.2f}x ({int(volume * 100)}%)")
-    
-    # Create output file
-    fd, output_path = tempfile.mkstemp(suffix="_vol.wav")
-    os.close(fd)
-    
-    # Convert to dB for more natural volume control
-    # volume=2.0 is a linear multiplier, but for large changes dB is better
-    if volume > 0:
-        volume_db = 20 * (volume ** 0.5 - 1)  # Approximate perceptual scaling
-        volume_filter = f"volume={volume:.3f}"  # Use linear for precision
-    else:
-        volume_filter = "volume=0"
-    
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", audio_path,
-        "-af", volume_filter,
-        "-c:a", "pcm_s24le",  # Preserve quality
-        output_path
-    ]
+    print(f"{req_tag}Applying output volume: {volume:.2f}x ({int(volume * 100)}%) (in-memory)")
     
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        # Read audio
+        data, sr = sf.read(audio_path, dtype='float32')
+        
+        # Apply volume (simple linear scaling)
+        data = data * volume
+        
+        # Clip to prevent clipping distortion
+        data = np.clip(data, -1.0, 1.0)
+        
+        # Create output file
+        fd, output_path = tempfile.mkstemp(suffix="_vol.wav")
+        os.close(fd)
+        
+        # Write adjusted audio
+        sf.write(output_path, data, sr)
         return output_path
-    except subprocess.CalledProcessError as e:
-        print(f"{req_tag}Volume adjustment failed: {e.stderr.decode() if e.stderr else e}")
+        
+    except Exception as e:
+        print(f"{req_tag}Volume adjustment failed: {e}")
         # Return original on failure
+        return audio_path
+
+
+def resample_and_adjust_volume(
+    audio_path: str, 
+    target_sr: int = PIPELINE_SAMPLE_RATE,
+    volume: float = 1.0,
+    request_id: str = None
+) -> str:
+    """
+    Combined resample + volume adjustment in single read/write cycle.
+    Uses SoXr for high-quality resampling.
+    
+    Args:
+        audio_path: Path to input audio file
+        target_sr: Target sample rate (default: 44100)
+        volume: Volume multiplier (1.0 = no change)
+        request_id: Optional request ID for logging
+    
+    Returns:
+        Path to processed audio file
+    """
+    import soundfile as sf
+    import soxr
+    import numpy as np
+    
+    req_tag = f"[{request_id}] " if request_id else ""
+    
+    try:
+        # Read audio
+        data, current_sr = sf.read(audio_path, dtype='float32')
+        
+        needs_resample = current_sr != target_sr
+        needs_volume = abs(volume - 1.0) >= 0.01
+        
+        # If nothing to do, return original
+        if not needs_resample and not needs_volume:
+            return audio_path
+        
+        ops = []
+        if needs_resample:
+            ops.append(f"resample {current_sr}→{target_sr}Hz (SoXr)")
+        if needs_volume:
+            ops.append(f"volume {int(volume*100)}%")
+        print(f"{req_tag}Processing: {', '.join(ops)}")
+        
+        # Resample if needed using SoXr VHQ
+        if needs_resample:
+            data = soxr.resample(data, current_sr, target_sr, quality='VHQ')
+            current_sr = target_sr
+        
+        # Apply volume if needed
+        if needs_volume:
+            data = data * volume
+            data = np.clip(data, -1.0, 1.0)
+        
+        # Create output file
+        fd, output_path = tempfile.mkstemp(suffix="_proc.wav")
+        os.close(fd)
+        
+        # Write processed audio
+        sf.write(output_path, data.astype(np.float32), current_sr)
+        return output_path
+        
+    except Exception as e:
+        print(f"{req_tag}Processing failed: {e}, returning original")
         return audio_path
 
 
 # Shared thread pool for blocking operations (TTS, RVC, Post)
 _executor: Optional[ThreadPoolExecutor] = None
+
+# Cache for prepared prompt audio (path -> (prepared_path, mtime))
+# Avoids re-preparing the same prompt audio repeatedly
+_prompt_cache: Dict[str, tuple] = {}
+_prompt_cache_lock = threading.Lock()
+MAX_PROMPT_CACHE_SIZE = 10  # Keep last N prompts cached
+
+
+def get_prepared_prompt(prompt_audio_path: str, request_id: str = None) -> str:
+    """
+    Get or create a prepared prompt audio file (24kHz mono WAV).
+    Uses LRU cache to avoid re-preparing the same prompt repeatedly.
+    
+    Args:
+        prompt_audio_path: Path to original prompt audio
+        request_id: Optional request ID for logging
+    
+    Returns:
+        Path to prepared prompt audio (cached or newly created)
+    """
+    from pydub import AudioSegment
+    
+    req_tag = f"[{request_id}] " if request_id else ""
+    
+    try:
+        # Get file modification time for cache invalidation
+        mtime = os.path.getmtime(prompt_audio_path)
+        cache_key = prompt_audio_path
+        
+        with _prompt_cache_lock:
+            # Check cache
+            if cache_key in _prompt_cache:
+                cached_path, cached_mtime = _prompt_cache[cache_key]
+                if cached_mtime == mtime and os.path.exists(cached_path):
+                    print(f"{req_tag}Using cached prompt audio: {os.path.basename(prompt_audio_path)}")
+                    return cached_path
+        
+        # Prepare prompt (24kHz mono for Chatterbox)
+        print(f"{req_tag}Preparing prompt audio: {os.path.basename(prompt_audio_path)}")
+        fd, prepared_path = tempfile.mkstemp(suffix="_prompt_cached.wav")
+        os.close(fd)
+        
+        seg = AudioSegment.from_file(prompt_audio_path)
+        seg = seg.set_channels(1).set_frame_rate(24000)
+        seg.export(prepared_path, format="wav")
+        
+        with _prompt_cache_lock:
+            # Add to cache
+            _prompt_cache[cache_key] = (prepared_path, mtime)
+            
+            # Evict old entries if cache is too large
+            if len(_prompt_cache) > MAX_PROMPT_CACHE_SIZE:
+                # Remove oldest entry (simple FIFO, not true LRU)
+                oldest_key = next(iter(_prompt_cache))
+                old_path, _ = _prompt_cache.pop(oldest_key)
+                try:
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
+                except:
+                    pass
+        
+        return prepared_path
+        
+    except Exception as e:
+        print(f"{req_tag}Prompt preparation failed: {e}")
+        raise
 
 
 def get_executor() -> ThreadPoolExecutor:
@@ -619,27 +738,20 @@ async def generate_audio_streaming(
             yield {"type": "error", "message": "Chatterbox requires a prompt audio file"}
             return
         
-        # Prepare prompt audio (mono WAV @ 24kHz)
-        fd, prepared_prompt = tempfile.mkstemp(suffix="_prompt.wav")
-        os.close(fd)
-        temp_files.append(prepared_prompt)
+        # Get prepared prompt audio from cache (or prepare if not cached)
+        # This avoids re-preparing the same prompt for every generation
         try:
-            seg = AudioSegment.from_file(prompt_audio)
-            seg = seg.set_channels(1).set_frame_rate(24000)
-            seg.export(prepared_prompt, format="wav")
+            prepared_prompt = get_prepared_prompt(prompt_audio, request_id)
+            # Don't add to temp_files - cached prompts are managed separately
         except Exception as e:
             yield {"type": "error", "message": f"Failed to prepare prompt audio: {e}"}
             return
         
-        # Split text into chunks ONCE upfront
-        from util.text_utils import split_text
-        chunks = split_text(
-            request.input, 
-            max_tokens=request.tts_batch_tokens, 
-            token_method=request.tts_token_method
-        )
+        # Don't re-split - client already sends pre-split sentences
+        # Each request should be a single chunk for streaming TTS
+        chunks = [request.input.strip()]
         
-        if not chunks:
+        if not chunks[0]:
             yield {"type": "error", "message": "No text to process"}
             return
         
@@ -854,24 +966,15 @@ async def generate_audio_streaming(
                             break
                         
                         temps.append(rvc_path)
-                        
-                        # Resample to pipeline standard rate (44.1kHz) after RVC
-                        def do_resample(path=rvc_path, req_id=request_id):
-                            return resample_to_pipeline_rate(path, request_id=req_id)
-                        
-                        resampled_path = await asyncio.get_event_loop().run_in_executor(executor, do_resample)
-                        if resampled_path != rvc_path:
-                            temps.append(resampled_path)
-                            await post_queue.put((idx, chunk_text, resampled_path, temps))
-                        else:
-                            await post_queue.put((idx, chunk_text, rvc_path, temps))
+                        # Resample + volume is done in post_stage (combined for efficiency)
+                        await post_queue.put((idx, chunk_text, rvc_path, temps))
                     else:
                         await post_queue.put((idx, chunk_text, audio_path, temps))
             except Exception as e:
                 pipeline_error = e
                 await post_queue.put(DONE)
         
-        # Post-processing Stage (includes output volume)
+        # Post-processing Stage (includes resample + output volume combined)
         output_volume = getattr(request, 'output_volume', 1.0)
         
         async def post_stage():
@@ -890,7 +993,7 @@ async def generate_audio_streaming(
                     idx, chunk_text, audio_path, temps = item
                     current = audio_path
                     
-                    # Post-processing
+                    # Post-processing effects (EQ, reverb, etc.)
                     if do_post:
                         status(f"Post chunk {idx+1}/{total_chunks}")
                         
@@ -901,14 +1004,20 @@ async def generate_audio_streaming(
                         temps.append(post_path)
                         current = post_path
                     
-                    # Apply output volume (if not 1.0)
-                    if output_volume != 1.0:
-                        def do_volume(path=current, vol=output_volume, req_id=request_id):
-                            return apply_output_volume(path, vol, request_id=req_id)
-                        
-                        vol_path = await asyncio.get_event_loop().run_in_executor(executor, do_volume)
-                        temps.append(vol_path)
-                        current = vol_path
+                    # Combined resample (44.1kHz) + volume adjustment in one operation
+                    # This is much faster than separate operations
+                    def do_final_process(path=current, vol=output_volume, req_id=request_id):
+                        return resample_and_adjust_volume(
+                            path, 
+                            target_sr=PIPELINE_SAMPLE_RATE, 
+                            volume=vol, 
+                            request_id=req_id
+                        )
+                    
+                    final_path = await asyncio.get_event_loop().run_in_executor(executor, do_final_process)
+                    if final_path != current:
+                        temps.append(final_path)
+                        current = final_path
                     
                     await output_queue.put((idx, chunk_text, current, temps))
             except Exception as e:
@@ -927,7 +1036,8 @@ async def generate_audio_streaming(
         
         # Consume output queue and yield results
         chunks_sent = 0
-        saved_paths = []  # Track saved chunk files
+        audio_segments = []  # Collect audio segments for final combine+save
+        total_duration = 0.0
         
         while True:
             # Check for cancellation before waiting for next item
@@ -951,36 +1061,20 @@ async def generate_audio_streaming(
             idx, chunk_text, audio_path, temps = item
             
             try:
-                # No per-chunk background mixing - client fetches background stream separately
-                # and plays it in sync with voice chunks
-                final_audio_path = audio_path
-                
-                # Read and encode audio
-                with open(final_audio_path, "rb") as f:
+                # Read and encode audio for streaming to client
+                with open(audio_path, "rb") as f:
                     audio_bytes = f.read()
                 
                 audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
                 
-                # Get duration
+                # Get duration and collect segment for final save
                 try:
-                    seg = AudioSegment.from_file(final_audio_path)
+                    seg = AudioSegment.from_file(audio_path)
                     duration = len(seg) / 1000.0
+                    audio_segments.append(seg)  # Collect for final combine
+                    total_duration += duration
                 except:
                     duration = 0
-                
-                # Save chunk to output folder
-                saved_path = None
-                try:
-                    chunk_label = f"chunk_{idx+1:03d}"
-                    
-                    def do_save(path=final_audio_path, label=chunk_label, req_id=request_id):
-                        return run_save(path, label, lambda s: None, request_id=req_id)
-                    
-                    saved_path = await asyncio.get_event_loop().run_in_executor(executor, do_save)
-                    saved_paths.append(saved_path)
-                    status(f"Chunk {idx+1}/{total_chunks}: Saved to {os.path.basename(saved_path)}")
-                except Exception as save_err:
-                    status(f"Chunk {idx+1}/{total_chunks}: Save failed: {save_err}")
                 
                 status(f"Chunk {idx+1}/{total_chunks}: Complete ({duration:.1f}s)")
                 chunks_sent += 1
@@ -992,7 +1086,6 @@ async def generate_audio_streaming(
                     "audio": audio_b64,
                     "duration": round(duration, 2),
                     "text": chunk_text[:100],
-                    "file": saved_path,  # Path to saved chunk file
                 }
             finally:
                 # Clean up temp files for this chunk
@@ -1011,11 +1104,44 @@ async def generate_audio_streaming(
         
         # Only yield complete if not cancelled
         if not pipeline_cancelled and not check_pipeline_cancelled():
+            # Combine all chunks and save once at the end
+            saved_path = None
+            if audio_segments:
+                try:
+                    status("Combining and saving final audio...")
+                    
+                    # Combine all segments
+                    combined = audio_segments[0]
+                    for seg in audio_segments[1:]:
+                        combined += seg
+                    
+                    # Write combined to temp file
+                    fd, combined_path = tempfile.mkstemp(suffix="_combined.wav")
+                    os.close(fd)
+                    combined.export(combined_path, format="wav")
+                    
+                    # Save to output folder (single file, not per-chunk)
+                    def do_final_save():
+                        return run_save(combined_path, request.input[:50], lambda s: None, request_id=request_id)
+                    
+                    saved_path = await asyncio.get_event_loop().run_in_executor(executor, do_final_save)
+                    status(f"Saved: {os.path.basename(saved_path)}")
+                    
+                    # Cleanup temp combined file
+                    try:
+                        os.remove(combined_path)
+                    except:
+                        pass
+                        
+                except Exception as save_err:
+                    status(f"Save failed: {save_err}")
+            
             status("Streaming complete")
             yield {
                 "type": "complete", 
                 "chunks_sent": chunks_sent,
-                "files": saved_paths,  # All saved chunk file paths
+                "total_duration": round(total_duration, 2),
+                "file": saved_path,  # Single combined file path
             }
         
     except Exception as e:

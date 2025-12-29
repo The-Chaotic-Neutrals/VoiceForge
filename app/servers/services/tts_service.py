@@ -10,7 +10,8 @@ Supports two generation modes:
 import os
 import sys
 import tempfile
-from typing import Callable, Optional, Literal
+import threading
+from typing import Callable, Optional, Literal, Dict
 
 from pydub import AudioSegment
 
@@ -21,6 +22,53 @@ if _APP_DIR not in sys.path:
 
 from util.clients import get_chatterbox_client
 from util.text_utils import split_text
+
+# Cache for prepared prompt audio (path -> (prepared_path, mtime))
+_prompt_cache: Dict[str, tuple] = {}
+_prompt_cache_lock = threading.Lock()
+MAX_PROMPT_CACHE_SIZE = 10
+
+
+def _get_prepared_prompt(prompt_audio_path: str) -> str:
+    """
+    Get or create a prepared prompt audio file (24kHz mono WAV).
+    Uses cache to avoid re-preparing the same prompt repeatedly.
+    """
+    try:
+        mtime = os.path.getmtime(prompt_audio_path)
+        cache_key = prompt_audio_path
+        
+        with _prompt_cache_lock:
+            if cache_key in _prompt_cache:
+                cached_path, cached_mtime = _prompt_cache[cache_key]
+                if cached_mtime == mtime and os.path.exists(cached_path):
+                    return cached_path
+        
+        # Prepare prompt
+        fd, prepared_path = tempfile.mkstemp(suffix="_prompt_cached.wav")
+        os.close(fd)
+        
+        seg = AudioSegment.from_file(prompt_audio_path)
+        seg = seg.set_channels(1).set_frame_rate(24000)
+        seg.export(prepared_path, format="wav")
+        
+        with _prompt_cache_lock:
+            _prompt_cache[cache_key] = (prepared_path, mtime)
+            
+            # Evict old entries
+            if len(_prompt_cache) > MAX_PROMPT_CACHE_SIZE:
+                oldest_key = next(iter(_prompt_cache))
+                old_path, _ = _prompt_cache.pop(oldest_key)
+                try:
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
+                except:
+                    pass
+        
+        return prepared_path
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to prepare prompt audio: {e}")
 
 
 def generate_tts_wav(
@@ -125,34 +173,22 @@ def _generate_tts_streaming(
     if not prompt_audio_path or not os.path.exists(prompt_audio_path):
         raise ValueError("Chatterbox requires a prompt audio file for voice cloning.")
     
-    # Prepare prompt audio (mono WAV @ 24kHz for best results)
-    fd, prepared_prompt = tempfile.mkstemp(suffix="_prompt.wav")
-    os.close(fd)
-    try:
-        seg = AudioSegment.from_file(prompt_audio_path)
-        seg = seg.set_channels(1).set_frame_rate(24000)
-        seg.export(prepared_prompt, format="wav")
-    except Exception as e:
-        raise RuntimeError(f"Failed to prepare prompt audio: {e}")
+    # Get prepared prompt from cache (or prepare if not cached)
+    prepared_prompt = _get_prepared_prompt(prompt_audio_path)
     
     status_update("Streaming TTS generation...")
     
-    try:
-        client = get_chatterbox_client()
-        
-        return client.generate_stream(
-            text=text,
-            prompt_audio_path=prepared_prompt,
-            seed=seed,
-            max_tokens=max_tokens,
-            on_chunk=on_chunk,
-            on_progress=progress_callback
-        )
-    finally:
-        try:
-            os.remove(prepared_prompt)
-        except:
-            pass
+    client = get_chatterbox_client()
+    
+    return client.generate_stream(
+        text=text,
+        prompt_audio_path=prepared_prompt,
+        seed=seed,
+        max_tokens=max_tokens,
+        on_chunk=on_chunk,
+        on_progress=progress_callback
+    )
+    # Note: Don't delete prepared_prompt - it's cached for reuse
 
 
 def _generate_tts_single(
@@ -169,32 +205,20 @@ def _generate_tts_single(
     if progress_callback:
         progress_callback(0.0)
     
-    # Prepare prompt audio (mono WAV @ 24kHz for best results)
-    fd, prepared_prompt = tempfile.mkstemp(suffix="_prompt.wav")
-    os.close(fd)
-    try:
-        seg = AudioSegment.from_file(prompt_audio_path)
-        seg = seg.set_channels(1).set_frame_rate(24000)
-        seg.export(prepared_prompt, format="wav")
-    except Exception as e:
-        raise RuntimeError(f"Failed to prepare prompt audio: {e}")
+    # Get prepared prompt from cache (or prepare if not cached)
+    prepared_prompt = _get_prepared_prompt(prompt_audio_path)
     
     status_update("Generating with Chatterbox-Turbo...")
     
-    try:
-        client = get_chatterbox_client()
-        result = client.generate(
-            text=text,
-            prompt_audio_path=prepared_prompt,
-            seed=seed
-        )
-        
-        if progress_callback:
-            progress_callback(1.0)
-        
-        return result
-    finally:
-        try:
-            os.remove(prepared_prompt)
-        except:
-            pass
+    client = get_chatterbox_client()
+    result = client.generate(
+        text=text,
+        prompt_audio_path=prepared_prompt,
+        seed=seed
+    )
+    
+    if progress_callback:
+        progress_callback(1.0)
+    
+    return result
+    # Note: Don't delete prepared_prompt - it's cached for reuse

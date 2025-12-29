@@ -110,18 +110,6 @@
             <div class="card-section" style="margin-top: 4px;">
                 <div class="section-header">TTS Settings</div>
                 
-                <!-- Model Warmup -->
-                <div class="form-group" style="margin-bottom: 12px;">
-                    <div class="form-row" style="gap: 10px; align-items: center;">
-                        <button class="btn btn-secondary" onclick="warmupTTSModel()" id="tts-warmup-btn" style="min-width: 120px;">
-                            <span>🔥</span> Warmup Model
-                        </button>
-                        <span id="tts-warmup-status" style="font-size: 11px; color: var(--text-muted);">
-                            Pre-warm the TTS model to avoid gibberish on first generation
-                        </span>
-                    </div>
-                </div>
-                
                 <div class="form-grid">
                     <div class="form-group">
                         <label for="tts-mode" class="label-with-help">
@@ -1294,56 +1282,6 @@
             config = data;
             try { await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)}); }
             catch(e) { console.error('Save failed:', e); }
-        }
-        
-        async function warmupTTSModel() {
-            const btn = document.getElementById('tts-warmup-btn');
-            const statusEl = document.getElementById('tts-warmup-status');
-            
-            btn.disabled = true;
-            btn.innerHTML = '<span>⏳</span> Warming up...';
-            
-            // Get the currently selected audio prompt path
-            const promptPath = window.lastChatterboxPromptPath;
-            if (promptPath) {
-                statusEl.textContent = `Warming up with: ${window.lastChatterboxPromptFilename || 'saved prompt'}...`;
-            } else {
-                statusEl.textContent = 'Running warmup inference (using config or fallback)...';
-            }
-            statusEl.style.color = 'var(--text-muted)';
-            
-            try {
-                // Build request body with optional prompt path
-                const body = {};
-                if (promptPath) {
-                    body.prompt_audio_path = promptPath;
-                }
-                
-                const response = await fetch('/api/tts/warmup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok && data.status === 'ok') {
-                    statusEl.textContent = '✓ ' + (data.message || 'Model warmed up and ready!');
-                    statusEl.style.color = 'var(--success)';
-                    showToast('TTS model warmed up successfully', 'success');
-                } else {
-                    statusEl.textContent = '✗ ' + (data.detail || data.message || 'Warmup failed');
-                    statusEl.style.color = 'var(--error)';
-                    showToast('TTS warmup failed', 'error');
-                }
-            } catch (err) {
-                statusEl.textContent = '✗ Error: ' + err.message;
-                statusEl.style.color = 'var(--error)';
-                showToast('TTS warmup error: ' + err.message, 'error');
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<span>🔥</span> Warmup Model';
-            }
         }
         
         function collectTTSRequest() {
@@ -3337,13 +3275,12 @@
                 source.connect(liveScriptProcessor);
                 liveScriptProcessor.connect(liveAudioContext.destination);
                 
-                // Connect to WebSocket
-                // Try connecting through the main server proxy first, then directly to ASR server
+                // Connect to WebSocket on ASR server directly
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const mainServerHost = window.location.host; // e.g., localhost:7860
                 
-                // Build WebSocket URL - try main server proxy first
-                let wsUrl = `${wsProtocol}//${mainServerHost}/ws/live-transcription?model=${encodeURIComponent(model)}&language=${encodeURIComponent(language)}`;
+                // ASR server runs on port 8889
+                const asrHost = window.location.hostname + ':8889';
+                let wsUrl = `${wsProtocol}//${asrHost}/v1/audio/transcriptions/live?model=${encodeURIComponent(model)}&language=${encodeURIComponent(language)}`;
                 
                 console.log('[LIVE] Connecting to:', wsUrl);
                 document.getElementById('live-status-text').textContent = 'Connecting...';
@@ -3583,8 +3520,8 @@
                     } 
                 });
                 
-                // Set up audio context for level visualization
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                // Set up audio context for recording raw PCM (WAV compatible)
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 analyser = audioContext.createAnalyser();
                 const source = audioContext.createMediaStreamSource(micStream);
                 source.connect(analyser);
@@ -3593,43 +3530,103 @@
                 // Start level visualization
                 updateMicLevel();
                 
-                // Create MediaRecorder
-                const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-                mediaRecorder = new MediaRecorder(micStream, { mimeType });
+                // Capture raw PCM audio using ScriptProcessor
                 audioChunks = [];
+                const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                source.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
                 
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        audioChunks.push(event.data);
-                    }
+                scriptProcessor.onaudioprocess = (e) => {
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    // Copy the buffer (it gets reused)
+                    audioChunks.push(new Float32Array(inputData));
                 };
                 
-                mediaRecorder.onstop = async () => {
-                    // Create audio blob
-                    const mimeType = mediaRecorder.mimeType;
-                    const audioBlob = new Blob(audioChunks, { type: mimeType });
-                    
-                    // Show preview
-                    const preview = document.getElementById('mic-audio-preview');
-                    const player = document.getElementById('mic-audio-player');
-                    player.src = URL.createObjectURL(audioBlob);
-                    preview.style.display = 'block';
-                    
-                    // Store blob for transcription
-                    window.recordedAudioBlob = audioBlob;
-                    
-                    // Clean up
-                    if (micStream) {
-                        micStream.getTracks().forEach(track => track.stop());
+                // Store processor for cleanup
+                window.micScriptProcessor = scriptProcessor;
+                
+                // Function to convert Float32 chunks to WAV blob
+                window.createWavBlob = () => {
+                    // Concatenate all chunks
+                    const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+                    const audioData = new Float32Array(totalLength);
+                    let offset = 0;
+                    for (const chunk of audioChunks) {
+                        audioData.set(chunk, offset);
+                        offset += chunk.length;
                     }
-                    if (audioContext) {
-                        audioContext.close();
-                        audioContext = null;
+                    
+                    // Convert to 16-bit PCM
+                    const buffer = new ArrayBuffer(44 + audioData.length * 2);
+                    const view = new DataView(buffer);
+                    
+                    // WAV header
+                    const writeString = (offset, string) => {
+                        for (let i = 0; i < string.length; i++) {
+                            view.setUint8(offset + i, string.charCodeAt(i));
+                        }
+                    };
+                    
+                    const sampleRate = 16000;
+                    writeString(0, 'RIFF');
+                    view.setUint32(4, 36 + audioData.length * 2, true);
+                    writeString(8, 'WAVE');
+                    writeString(12, 'fmt ');
+                    view.setUint32(16, 16, true); // fmt chunk size
+                    view.setUint16(20, 1, true); // PCM format
+                    view.setUint16(22, 1, true); // mono
+                    view.setUint32(24, sampleRate, true);
+                    view.setUint32(28, sampleRate * 2, true); // byte rate
+                    view.setUint16(32, 2, true); // block align
+                    view.setUint16(34, 16, true); // bits per sample
+                    writeString(36, 'data');
+                    view.setUint32(40, audioData.length * 2, true);
+                    
+                    // Write audio data
+                    let dataOffset = 44;
+                    for (let i = 0; i < audioData.length; i++) {
+                        const sample = Math.max(-1, Math.min(1, audioData[i]));
+                        view.setInt16(dataOffset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                        dataOffset += 2;
                     }
+                    
+                    return new Blob([buffer], { type: 'audio/wav' });
                 };
                 
-                // Start recording
-                mediaRecorder.start(100); // Collect data every 100ms
+                // Simulate mediaRecorder interface for compatibility
+                mediaRecorder = {
+                    state: 'recording',
+                    stop: () => {
+                        mediaRecorder.state = 'inactive';
+                        
+                        // Disconnect processor
+                        if (window.micScriptProcessor) {
+                            window.micScriptProcessor.disconnect();
+                            window.micScriptProcessor = null;
+                        }
+                        
+                        // Create WAV blob
+                        const audioBlob = window.createWavBlob();
+                        
+                        // Show preview
+                        const preview = document.getElementById('mic-audio-preview');
+                        const player = document.getElementById('mic-audio-player');
+                        player.src = URL.createObjectURL(audioBlob);
+                        preview.style.display = 'block';
+                        
+                        // Store blob for transcription
+                        window.recordedAudioBlob = audioBlob;
+                        
+                        // Clean up
+                        if (micStream) {
+                            micStream.getTracks().forEach(track => track.stop());
+                        }
+                        if (audioContext) {
+                            audioContext.close();
+                            audioContext = null;
+                        }
+                    }
+                };
                 recordingStartTime = Date.now();
                 
                 // Update UI
@@ -3717,9 +3714,8 @@
                     return;
                 }
                 
-                // Convert blob to file
-                const ext = window.recordedAudioBlob.type.includes('webm') ? 'webm' : 'm4a';
-                audioFile = new File([window.recordedAudioBlob], `recording.${ext}`, { type: window.recordedAudioBlob.type });
+                // Convert blob to file (now always WAV)
+                audioFile = new File([window.recordedAudioBlob], 'recording.wav', { type: 'audio/wav' });
             }
             
             const btn = document.getElementById('transcribe-btn');

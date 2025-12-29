@@ -27,3 +27,8 @@ app/comfyui/ComfyUI.lnk
 /app/.cache
 /app/comfyui/python_embeded
 *.index
+/app/models/whisper/models--deepdml--faster-whisper-large-v3-turbo-ct2
+app/config/config.json
+app/config/config.json
+app/config/config.json
+app/config/config.json

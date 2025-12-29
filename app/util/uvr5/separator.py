@@ -372,11 +372,11 @@ class UVR5Separator:
                 self.model = CascadedNet(n_fft, nout=nout)
             else:
                 # HP5 and standard models use CascadedASPPNet
-            logger.info(f"Creating CascadedASPPNet with n_fft={n_fft}")
-            self.model = CascadedASPPNet(n_fft)
+                logger.info(f"Creating CascadedASPPNet with n_fft={n_fft}")
+                self.model = CascadedASPPNet(n_fft)
             
             try:
-            self.model.load_state_dict(cpk)
+                self.model.load_state_dict(cpk)
                 logger.info(f"Successfully loaded model weights")
             except RuntimeError as e:
                 logger.warning(f"Strict load failed: {str(e)[:200]}...")
