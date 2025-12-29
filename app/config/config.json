@@ -1,5 +1,5 @@
 {
-  "model": "Goddess_Soft",
+  "model": "",
   "enable_rvc": true,
   "enable_post": true,
   "enable_background": true,
@@ -26,53 +26,18 @@
   "air_gain": 2,
   "air_width": 1,
   "bg_tracks": [
-    {
-      "file": "sounds/Binaural beats HFO The sacred pleasure.mp3",
-      "volume": 0.48,
-      "delay": 0,
-      "fade_in": 5,
-      "fade_out": 5
-    },
-    {
-      "file": "sounds/headpats.mp3",
-      "volume": 0.22,
-      "delay": 3,
-      "fade_in": 12,
-      "fade_out": 12
-    },
-    {
-      "file": "sounds/chest.mp3",
-      "volume": 0.38,
-      "delay": 5,
-      "fade_in": 8,
-      "fade_out": 8
-    },
-    {
-      "file": "sounds/rain.mp3",
-      "volume": 0.2,
-      "delay": 0,
-      "fade_in": 10,
-      "fade_out": 10
-    },
-    {
-      "file": "sounds/Binaural Beat - Affirmations for Intense Physical & Emotional Arousal.mp3",
-      "volume": 0.1,
-      "delay": 3,
-      "fade_in": 5,
-      "fade_out": 3
-    }
   ],
   "main_audio_volume": 0.4,
   "max_workers": 20,
   "rvc_workers": 1,
   "comfyui_url": "http://127.0.0.1:8880/",
-  "comfyui_path": "D:\\Github\\VoiceForge\\app\\comfyui\\ComfyUI\\",
+  "comfyui_path": "",
   "tts_batch_tokens": 50,
   "tts_token_method": "tiktoken",
   "use_chatterbox": true,
   "chatterbox_seed": -1,
-  "chatterbox_prompt_filename": "GoddessSoft.wav",
-  "chatterbox_prompt_path": "D:\\Github\\VoiceForge\\app\\assets\\audio_prompts\\GoddessSoft.wav",
+  "chatterbox_prompt_filename": "",
+  "chatterbox_prompt_path": "",
   "respiration_median": 3,
   "consonant_breath": 0.3,
   "reverb_in": 1,
@@ -87,11 +52,11 @@
   "uvr5_model": "hp5_vocals",
   "uvr5_aggression": 20,
   "uvr5_skip_cache": false,
-  "model_select": "Goddess_Soft",
+  "model_select": "",
   "token_method_tiktoken": "tiktoken",
   "token_method_words": "words",
   "tts_mode": "streaming",
-  "audio_prompt_select": "D:\\Github\\VoiceForge\\app\\assets\\audio_prompts\\GoddessSoft.wav",
+  "audio_prompt_select": "",
   "warmth": 0,
   "intimacy": 0,
   "clarity": 0,
