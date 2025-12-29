@@ -26,3 +26,4 @@ app/comfyui/ComfyUI.lnk
 *.pyc
 /app/.cache
 /app/comfyui/python_embeded
+*.index
