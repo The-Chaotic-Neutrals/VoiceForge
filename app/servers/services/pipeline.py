@@ -747,11 +747,17 @@ async def generate_audio_streaming(
             yield {"type": "error", "message": f"Failed to prepare prompt audio: {e}"}
             return
         
-        # Don't re-split - client already sends pre-split sentences
-        # Each request should be a single chunk for streaming TTS
-        chunks = [request.input.strip()]
+        # Split text into chunks for streaming
+        # Short text (single sentences from SillyTavern) won't be split further
+        # Long text (from main UI) will be chunked for progressive streaming
+        from util.text_utils import split_text
+        chunks = split_text(
+            request.input, 
+            max_tokens=request.tts_batch_tokens, 
+            token_method=request.tts_token_method
+        )
         
-        if not chunks[0]:
+        if not chunks:
             yield {"type": "error", "message": "No text to process"}
             return
         
