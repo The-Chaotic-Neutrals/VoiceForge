@@ -4,6 +4,7 @@ ASR Router - Speech Recognition endpoints.
 Handles:
 - /v1/audio/transcriptions - OpenAI-compatible transcription
 - /api/transcribe - Simple transcription
+- /api/save-transcription - Save transcription text to file
 - /v1/asr/health - ASR health check
 """
 
@@ -272,3 +273,47 @@ async def transcribe_stream(
             os.remove(tmp_path)
         except:
             pass
+
+
+@router.post("/api/save-transcription")
+async def save_transcription(
+    request: Request,
+    _: bool = Depends(verify_auth)
+):
+    """
+    Save transcription text to a file.
+    
+    Args:
+        request: JSON body with { "text": "transcription content" }
+        
+    Returns:
+        { "filename": "transcription_YYYYMMDD_HHMMSS.txt", "path": "/path/to/file" }
+    """
+    from datetime import datetime
+    
+    try:
+        body = await request.json()
+        text = body.get("text", "")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="No text provided")
+        
+        # Create transcriptions directory if it doesn't exist
+        output_dir = os.path.join(os.getcwd(), "outputs", "transcriptions")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"transcription_{timestamp}.txt"
+        filepath = os.path.join(output_dir, filename)
+        
+        # Save the transcription
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(text)
+        
+        return {"filename": filename, "path": filepath}
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

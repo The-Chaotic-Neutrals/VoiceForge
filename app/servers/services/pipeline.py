@@ -983,8 +983,12 @@ async def generate_audio_streaming(
         # Post-processing Stage (includes resample + output volume combined)
         output_volume = getattr(request, 'output_volume', 1.0)
         
+        # Track elapsed time for spatial audio continuity in streaming mode
+        # Without this, each chunk's panning would reset to the start position
+        streaming_elapsed_time = 0.0
+        
         async def post_stage():
-            nonlocal pipeline_error, pipeline_cancelled
+            nonlocal pipeline_error, pipeline_cancelled, streaming_elapsed_time
             try:
                 while True:
                     if check_pipeline_cancelled():
@@ -1003,8 +1007,15 @@ async def generate_audio_streaming(
                     if do_post:
                         status(f"Post chunk {idx+1}/{total_chunks}")
                         
-                        def do_post_process(path=current, req_id=request_id):
-                            return run_postprocess(path, post_params, lambda s: None, request_id=req_id)
+                        # Inject time offset for spatial audio continuity
+                        # This ensures panning continues from where the last chunk ended
+                        chunk_post_params = post_params.copy() if post_params else {}
+                        chunk_post_params['spatial_time_offset'] = streaming_elapsed_time
+                        
+                        print(f"[{request_id}] Post chunk {idx+1}: spatial_time_offset={streaming_elapsed_time:.2f}s")
+                        
+                        def do_post_process(path=current, params=chunk_post_params, req_id=request_id):
+                            return run_postprocess(path, params, lambda s: None, request_id=req_id)
                         
                         post_path = await asyncio.get_event_loop().run_in_executor(executor, do_post_process)
                         temps.append(post_path)
@@ -1024,6 +1035,19 @@ async def generate_audio_streaming(
                     if final_path != current:
                         temps.append(final_path)
                         current = final_path
+                    
+                    # Update elapsed time for spatial audio continuity
+                    # Get chunk duration from the final processed file
+                    try:
+                        import soundfile as sf
+                        info = sf.info(current)
+                        chunk_duration = info.duration
+                        streaming_elapsed_time += chunk_duration
+                        print(f"[{request_id}] Chunk {idx+1} duration: {chunk_duration:.2f}s, total elapsed: {streaming_elapsed_time:.2f}s")
+                    except Exception as e:
+                        # Fallback: estimate from sample rate
+                        streaming_elapsed_time += 5.0  # Assume ~5s chunks
+                        print(f"[{request_id}] Chunk {idx+1} duration unknown (fallback 5s), total elapsed: {streaming_elapsed_time:.2f}s")
                     
                     await output_queue.put((idx, chunk_text, current, temps))
             except Exception as e:

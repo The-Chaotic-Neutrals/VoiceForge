@@ -100,11 +100,16 @@ async def post_process_audio_file(
             
             with open(tmp_path, 'rb') as f:
                 import requests
+                # Dynamic timeout: 10 min base + 1 min per 20MB, max 60 min
+                # 321MB file = ~18 min timeout
+                read_timeout = max(600, min(3600, 600 + int(file_size_mb / 20) * 60))
+                if file_size_mb > 100:
+                    print(f"[POST-ROUTER] Large file timeout: {read_timeout}s ({read_timeout//60} min)")
                 response = requests.post(
                     f"{AUDIO_SERVICES_SERVER_URL}/v1/postprocess",
                     files={"audio": ("input.wav", f, "audio/wav")},
                     data=post_params_dict,
-                    timeout=(30, 600)  # (connect=30s, read=600s)
+                    timeout=(30, read_timeout)  # (connect=30s, read=dynamic)
                 )
             return response
         except Exception as e:
@@ -131,11 +136,20 @@ async def post_process_audio_file(
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     
+    print(f"[POST-ROUTER] HTTP complete: {(t_http_end - t_http_start)*1000:.0f}ms, reading content...")
+    
+    # For large files, this loads the entire response into memory
+    t_content_start = time.perf_counter()
+    content = response.content
+    content_size_mb = len(content) / (1024 * 1024)
+    print(f"[POST-ROUTER] Content read: {content_size_mb:.1f}MB in {(time.perf_counter() - t_content_start)*1000:.0f}ms")
+    
     t_end = time.perf_counter()
     print(f"[POST-ROUTER] Done: {(t_http_end - t_http_start)*1000:.0f}ms for {file_size_kb:.0f}KB, total: {(t_end - t_start)*1000:.0f}ms")
+    print(f"[POST-ROUTER] Returning response to client...")
     
     return Response(
-        content=response.content,
+        content=content,
         media_type="audio/wav",
         headers={"Content-Disposition": 'attachment; filename="postprocessed_audio.wav"'}
     )

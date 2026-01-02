@@ -1082,12 +1082,85 @@ def build_ffmpeg_base_cmd(
     return cmd
 
 
+def _log_effect_interactions(post_params: Dict[str, Any], asmr_enabled: bool, audio_8d_enabled: bool) -> None:
+    """
+    Log warnings about potentially problematic effect combinations.
+    
+    After consolidation, the main concerns are:
+    - Multiple bass boosts (bass_gain + spatial proximity)
+    - Multiple high boosts (ASMR tingles/crispness/breathiness + treble)
+    
+    Note: Spatial effects are now unified - no more ASMR vs 8D clashes!
+    Note: ASMR warmth consolidated into Spatial Proximity effect.
+    """
+    warnings = []
+    
+    # Count bass boost sources (bass_gain + spatial proximity)
+    bass_sources = []
+    if post_params.get("bass_gain", 0) > 3:
+        bass_sources.append("Bass Gain")
+    # Spatial proximity (applies when spatial audio is enabled)
+    avg_dist = post_params.get("audio_8d_distance", 0.5)
+    if avg_dist < 0.4 and post_params.get("audio_8d_proximity", True) is not False:
+        if audio_8d_enabled:
+            bass_sources.append("Spatial Proximity")
+    
+    if len(bass_sources) >= 2:
+        warnings.append(f"🟡 Multiple bass boosts: {', '.join(bass_sources)} - reduce one to avoid muddiness")
+    
+    # Count high boost sources
+    high_sources = []
+    if asmr_enabled:
+        if post_params.get("asmr_tingles", 0) > 50:
+            high_sources.append("Tingles")
+        if post_params.get("asmr_crispness", 0) > 50:
+            high_sources.append("Crispness")
+        if post_params.get("asmr_breathiness", 0) > 50:
+            high_sources.append("Breathiness")
+    if post_params.get("treble_gain", 0) > 3:
+        high_sources.append("Treble")
+    
+    if len(high_sources) >= 3:
+        warnings.append(f"🟡 Multiple high boosts: {', '.join(high_sources)} - may sound harsh")
+    
+    # Log warnings
+    for warning in warnings:
+        log_warn(f"[POST] {warning}")
+    
+    # Log good combinations
+    if asmr_enabled and audio_8d_enabled:
+        log_info(f"[POST] 🟢 ASMR tonal + spatial audio = optimal quality")
+
+
 def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
     """
-    Post-process audio with all effects in a SINGLE FFmpeg pass where possible.
-    Only pitch shift requires a separate pass due to sample rate manipulation.
+    Post-process audio with all effects in optimal order.
     
-    Order: EQ → Dynamics → ASMR → Reverb → 8D/Panning → Mastering
+    PROCESSING PIPELINE:
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │ STAGE 1-6: FFmpeg Pass (tonal processing)                                  │
+    │   • EQ (highpass, lowpass, bass, treble)                                   │
+    │   • ASMR Tonal (tingles, crispness, breathiness, compression)              │
+    │   • Enhancement (crystalizer, deesser)                                     │
+    │   • Reverb                                                                  │
+    │   • Limiter (safety, when ASMR enabled)                                    │
+    ├─────────────────────────────────────────────────────────────────────────────┤
+    │ STAGE 7: Python Spatial (unified binaural processing)                      │
+    │   • ITD (interaural time difference - sub-sample accurate)                 │
+    │   • Head Shadow (multi-band HRTF-like filtering)                           │
+    │   • Proximity Effect (bass + presence boost for closeness)                 │
+    │   • Crossfeed (natural inter-ear bleed)                                    │
+    │   • Micro-movements (organic variation - prevents robotic feel)            │
+    │   • Dynamic Panning (sweep/rotate/extreme modes)                           │
+    ├─────────────────────────────────────────────────────────────────────────────┤
+    │ STAGE 8: FFmpeg Pass (pitch shift, if enabled)                             │
+    └─────────────────────────────────────────────────────────────────────────────┘
+    
+    SPATIAL TRIGGER CONDITIONS:
+    • audio_8d_enabled=true → Dynamic or static positioning with full spatial effects
+    • asmr_enabled=true (no 8D) → Tonal shaping only (no spatial unless 8D also enabled)
+    
+    Note: All spatial processing now uses Python spatial_audio.py for maximum quality.
     """
     import time
     t_start = time.perf_counter()
@@ -1098,12 +1171,9 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
     pitch_shift_enabled = post_params.get("pitch_shift_enabled", False) and post_params.get("pitch_shift_semitones", 0) != 0
     asmr_enabled = post_params.get("asmr_enabled", False)
     audio_8d_enabled = post_params.get("audio_8d_enabled", False)
-    master_enabled = post_params.get("master_enabled", False)
     
-    # Determine if we need stereo output
-    stereo_width = post_params.get("stereo_width", 1.0)
-    asmr_binaural = post_params.get("asmr_binaural", True) if asmr_enabled else False
-    needs_stereo = stereo_width != 1.0 or audio_8d_enabled or asmr_binaural
+    # Determine if we need stereo output (spatial processing always needs stereo)
+    needs_stereo = audio_8d_enabled or asmr_enabled
 
     if needs_stereo:
         # Properly convert mono to stereo by duplicating channel 0 to both L/R
@@ -1134,15 +1204,16 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
     # ===== ASMR ENHANCEMENT SYSTEM =====
     # Comprehensive processing for maximum tingle-inducing quality
     if asmr_enabled:
-        # Get all ASMR parameters (0-100 scale, convert to 0-1)
-        intimacy = post_params.get("asmr_intimacy", 70) / 100.0
+        # Get ASMR parameters (0-100 scale, convert to 0-1)
         tingles = post_params.get("asmr_tingles", 60) / 100.0
         breathiness = post_params.get("asmr_breathiness", 65) / 100.0
         crispness = post_params.get("asmr_crispness", 55) / 100.0
-        warmth = post_params.get("asmr_warmth", 60) / 100.0
-        depth = post_params.get("asmr_depth", 40) / 100.0
         
-        log_info(f"[ASMR] Intimacy={intimacy:.0%} Tingles={tingles:.0%} Breath={breathiness:.0%} Crisp={crispness:.0%} Warm={warmth:.0%} Depth={depth:.0%}")
+        # Derive intimacy from Distance slider: close (0) = max intimacy, far (1) = no intimacy
+        distance = post_params.get("audio_8d_distance", 0.3)
+        intimacy = 1.0 - distance  # 0=far, 1=in ear
+        
+        log_info(f"[ASMR] Intimacy={intimacy:.0%} (from dist={distance}) Tingles={tingles:.0%} Breath={breathiness:.0%} Crisp={crispness:.0%}")
         
         # === INTIMACY: Compression for close, intimate feel ===
         # Light compression for "closeness" feel (gentler to avoid over-compression)
@@ -1158,11 +1229,7 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
             makeup = intimacy * 1.5  # Up to 1.5dB makeup gain (reduced to avoid pumping)
             filters.append(f"acompressor=threshold={threshold:.0f}dB:ratio={ratio:.1f}:attack={attack:.0f}:release={release:.0f}:makeup={makeup:.1f}:knee=8")
         
-        # === WARMTH: Low frequency body presence ===
-        if warmth > 0.1:
-            # Combine into single gentle low shelf instead of multiple bands
-            warm_gain = warmth * 2.5  # Up to 2.5dB (was 6dB!)
-            filters.append(f"lowshelf=f=200:w=0.7:g={warm_gain:.1f}")
+        # NOTE: Warmth/bass is now handled by Spatial Proximity effect (uses Distance slider)
         
         # === TINGLE ZONE: 2-8kHz enhancement ===
         if tingles > 0.1:
@@ -1179,17 +1246,8 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
         # === BREATHINESS: Airy quality ===
         if breathiness > 0.1:
             # Single air shelf (was multiple stacking highshelves!)
-            air_gain = breathiness * 3  # Up to 3dB (was 8dB!)
-            filters.append(f"highshelf=f=12000:w=0.7:g={air_gain:.1f}")
-        
-        # === INTIMATE ROOM REFLECTIONS (DEPTH) ===
-        if depth > 0.2:  # Higher threshold
-            # Very subtle room reflections
-            room_in = 0.8  # Fixed high input to preserve dry signal
-            room_out = 0.15 + depth * 0.2  # 0.15-0.35 output (much lower)
-            d1 = int(8 + depth * 8)  # 8-16ms
-            decay1 = 0.12 + depth * 0.1  # 0.12-0.22 (much lower decay)
-            filters.append(f"aecho={room_in:.2f}:{room_out:.2f}:{d1}:{decay1:.2f}")
+            breath_gain = breathiness * 3  # Up to 3dB (was 8dB!)
+            filters.append(f"highshelf=f=12000:w=0.7:g={breath_gain:.1f}")
     
     # ===== STAGE 3: Additive EQ (non-ASMR) =====
     bass_gain = post_params.get('bass_gain', 0.0)
@@ -1201,13 +1259,6 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
     if treble_gain != 0:
         treble_freq = post_params.get('treble_freq', 8000.0)
         filters.append(f"equalizer=f={treble_freq}:width_type=o:width=2:g={treble_gain:.1f}")
-    
-    # Air/presence boost (non-ASMR)
-    air_gain = post_params.get("air_gain", 0.0)
-    if air_gain != 0:
-        air_freq = post_params.get("air_freq", 10000.0)
-        air_width = post_params.get("air_width", 1.0)
-        filters.append(f"highshelf=f={air_freq:.0f}:w={air_width:.2f}:g={air_gain:.1f}")
     
     # ===== STAGE 4: Enhancement =====
     # Crystalizer: Adds harmonics/excitement but can introduce distortion
@@ -1231,121 +1282,113 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
         filters.append(f"deesser=i={safe_deess:.2f}")
     
     # ===== STAGE 5: Reverb =====
-    reverb_in_gain = post_params.get("reverb_in_gain", 0.0)
-    reverb_out_gain = post_params.get("reverb_out_gain", 0.0)
+    # Simplified: just delay + decay, gains are fixed to sensible values
     reverb_delay = post_params.get("reverb_delay", 0.0)
     reverb_decay = post_params.get("reverb_decay", 0.0)
     
-    if reverb_in_gain > 0 and reverb_out_gain > 0 and reverb_decay > 0 and reverb_delay > 0:
+    if reverb_decay > 0 and reverb_delay > 0:
+        # Fixed gain values: 0.8 in, 0.9 out (preserves original while adding reverb)
+        in_gain = 0.8
+        out_gain = 0.9
+        # Multi-tap echo for richer reverb
         delays = f"{reverb_delay:.1f}|{reverb_delay * 1.6:.1f}|{reverb_delay * 2.8:.1f}|{reverb_delay * 4.2:.1f}"
         decays = f"{reverb_decay:.2f}|{max(0.05, reverb_decay * 0.75):.2f}|{max(0.05, reverb_decay * 0.56):.2f}|{max(0.05, reverb_decay * 0.38):.2f}"
-        filters.append(f"aecho={reverb_in_gain:.2f}:{reverb_out_gain:.2f}:{delays}:{decays}")
+        filters.append(f"aecho={in_gain:.2f}:{out_gain:.2f}:{delays}:{decays}")
     
     # ===== STAGE 6: Stereo/Spatial =====
+    # 
+    # UNIFIED SPATIAL PROCESSING:
+    # All spatial effects (ITD, proximity, head shadow, crossfeed) are handled by
+    # Python spatial_audio.py for maximum quality. No more duplicate FFmpeg effects.
+    #
+    # ┌─────────────────────────────────────────────────────────────────────────────┐
+    # │ ASMR Tonal (FFmpeg)          │ Spatial Positioning (Python)                │
+    # ├─────────────────────────────────────────────────────────────────────────────┤
+    # │ • Warmth (low shelf)         │ • ITD (sub-sample accurate timing)          │
+    # │ • Tingles (presence boost)   │ • Head Shadow (multi-band HRTF-like)        │
+    # │ • Crispness (high detail)    │ • Proximity Effect (bass + presence)        │
+    # │ • Breathiness (air)          │ • Crossfeed (natural ear bleed)             │
+    # │ • Intimacy (compression)     │ • Micro-movements (organic variation)       │
+    # │                              │ • Dynamic panning (sweep/rotate/extreme)    │
+    # └─────────────────────────────────────────────────────────────────────────────┘
+    #
+    # audio_8d_enabled=true → Full spatial processing (ITD, head shadow, proximity, panning)
     
-    # ASMR Enhanced Binaural Processing - "In Your Ear" Effect
-    if asmr_enabled and asmr_binaural:
-        intimacy = post_params.get("asmr_intimacy", 70) / 100.0
-        
-        # === "IN YOUR EAR" BINAURAL POSITIONING ===
-        # Key: Use stereotools for proper panning without the fade/pulse artifacts
-        # stereotools allows continuous pan control and true L/R positioning
-        
-        # === HRTF-STYLE EAR DELAY ===
-        # Inter-aural time difference (ITD) creates 3D positioning
-        # Real human ITD is ~0.6ms max (head width / speed of sound)
-        # NOTE: Skip if 8D audio is enabled - it has its own HRTF delay
-        if not audio_8d_enabled:
-            ear_delay_ms = 0.3 + intimacy * 0.5  # 0.3-0.8ms
-            filters.append(f"adelay=0|{ear_delay_ms:.1f}")
-        
-        # === PROXIMITY BASS BOOST ===
-        # Close-mic/whisper effect: slight bass bump for "nearness"
-        # Real whispers in ear have more low-end presence
-        proximity_bass = intimacy * 3  # Up to 3dB bass boost
-        if proximity_bass > 0.5:
-            filters.append(f"equalizer=f=120:width_type=o:width=1.5:g={proximity_bass:.1f}")
-        
-        # === STEREO WIDTH FOR IMMERSION ===
-        # Slight widening for headphone immersion
-        # NOTE: Skip if 8D audio is enabled - extrastereo interferes with dynamic panning
-        if not audio_8d_enabled:
-            asmr_width = 1.1 + intimacy * 0.3  # 1.1 to 1.4 (subtle, not extreme)
-            final_width = max(stereo_width, asmr_width)
-            if final_width > 1.0:
-                filters.append(f"extrastereo=m={final_width:.2f}:c=1")
-    else:
-        # Non-ASMR stereo width
-        if stereo_width != 1.0:
-            filters.append(f"extrastereo=m={stereo_width:.2f}:c=1")
+    # Check for potential reverb stacking (the only remaining interaction concern)
+    _log_effect_interactions(post_params, asmr_enabled, audio_8d_enabled)
     
-    # 8D Audio effects - True L/R Positioning
-    # NOTE: Dynamic modes (sweep/rotate) are handled AFTER FFmpeg processing using Python spatial audio
-    # This provides proper ITD, ILD, and head shadow effects for immersive binaural audio
-    use_python_spatial = False  # Flag to apply Python spatial audio after FFmpeg
-    spatial_params = {}  # Parameters for Python spatial audio
+    # UNIFIED SPATIAL AUDIO - All spatial processing through Python spatial_audio.py
+    # This ensures consistent high-quality ITD, head shadow, proximity, and crossfeed
+    use_python_spatial = False
+    spatial_params = {}
+    avg_distance = 0.5  # Default distance
     
     if audio_8d_enabled:
+        # === UNIFIED SPATIAL AUDIO ===
         mode = post_params.get("audio_8d_mode", "rotate")
         speed = post_params.get("audio_8d_speed", 0.1)
+        
         # Pan arc in degrees (20-360), convert to half-arc for ±range
         pan_arc_degrees = post_params.get("audio_8d_depth", 180.0)
-        # If value is 0-1 range (old format), convert to degrees
-        if pan_arc_degrees <= 2.0:
+        if pan_arc_degrees <= 2.0:  # Old 0-1 format
             pan_arc_degrees = pan_arc_degrees * 180.0
-        half_arc = pan_arc_degrees / 2.0  # Half the arc for ±range
+        half_arc = pan_arc_degrees / 2.0
         
-        start_distance = post_params.get("audio_8d_start_distance", 1.0)
-        end_distance = post_params.get("audio_8d_end_distance", 1.0)
-        add_reverb = post_params.get("audio_8d_reverb", False)
+        # Distance controls the proximity effect (bass + presence boost when close)
+        # Uses single distance slider from UI (0 = touching ear, 1 = far)
+        avg_distance = post_params.get("audio_8d_distance", 0.3)
         
-        avg_distance = (start_distance + end_distance) / 2.0
-        
-        # === DISTANCE-BASED REVERB (Optional) ===
-        if add_reverb and avg_distance > 0.3:
-            reverb_amount = avg_distance * 0.6
-            reverb_in = 0.3 + 0.3 * reverb_amount
-            reverb_out = 0.3 + 0.3 * reverb_amount
-            d1 = int(15 + 25 * avg_distance)
-            d2 = int(25 + 35 * avg_distance)
-            reverb_delays = f"{d1}|{d2}"
-            reverb_decays = f"{0.2 + 0.15 * avg_distance:.2f}|{0.1 + 0.1 * avg_distance:.2f}"
-            filters.append(f"aecho={reverb_in:.2f}:{reverb_out:.2f}:{reverb_delays}:{reverb_decays}")
-        
-        # === DISTANCE-BASED VOLUME ===
+        # Distance-based volume (closer = louder)
         volume_db = 2.0 - 4.0 * avg_distance
         if abs(volume_db) > 0.3:
             filters.append(f"volume={volume_db:.1f}dB")
         
-        # === PANNING MODES ===
-        if mode == "static" or mode == "static_right":
-            # Static modes: Use FFmpeg for simple fixed positioning
-            pan_pos = 1.0 if mode == "static_right" else -1.0  # Right or Left
-            left_gain = math.sqrt(0.5 * (1 - pan_pos))
-            right_gain = math.sqrt(0.5 * (1 + pan_pos))
-            filters.append(f"pan=stereo|c0={left_gain:.4f}*c0+{left_gain:.4f}*c1|c1={right_gain:.4f}*c0+{right_gain:.4f}*c1")
+        # ALL modes use Python spatial for consistency and quality
+        use_python_spatial = True
+        
+        if mode == "center":
+            # Center/Binaural: Stationary front position with full spatial effects
+            spatial_params = {
+                "mode": "static",
+                "start_angle": 0.0,  # Front center
+                "head_shadow": True,
+                "head_shadow_intensity": 0.4,
+            }
+            log_info(f"[Spatial] Center (binaural): front position, distance={avg_distance:.2f}")
+        elif mode == "static":
+            spatial_params = {
+                "mode": "static",
+                "start_angle": -90.0,  # Full left
+                "head_shadow": True,
+                "head_shadow_intensity": 0.5,
+            }
+            log_info(f"[Spatial] Static left positioning")
+        elif mode == "static_right":
+            spatial_params = {
+                "mode": "static",
+                "start_angle": 90.0,  # Full right
+                "head_shadow": True,
+                "head_shadow_intensity": 0.5,
+            }
+            log_info(f"[Spatial] Static right positioning")
         else:
-            # Dynamic modes (sweep/rotate/extreme): Use Python spatial audio
-            # half_arc determines range: 90° = ±90° = full L-R, 180° = full circle
-            use_python_spatial = True
+            # Dynamic modes (sweep/rotate/extreme)
             spatial_params = {
                 "mode": mode,
                 "speed_hz": speed,
-                "start_angle": -half_arc,  # e.g., -90° for 180° arc
-                "end_angle": half_arc,      # e.g., +90° for 180° arc
+                "start_angle": -half_arc,
+                "end_angle": half_arc,
                 "head_shadow": True,
                 "head_shadow_intensity": 0.5 * (1.0 - avg_distance),
             }
-            log_info(f"[8D] Python spatial: mode={mode}, speed={speed}Hz, arc={pan_arc_degrees:.0f}° (±{half_arc:.0f}°)")
+            log_info(f"[Spatial] Dynamic: mode={mode}, speed={speed}Hz, arc={pan_arc_degrees:.0f}° (±{half_arc:.0f}°)")
     
     # ===== STAGE 7: Limiting (safety) =====
-    # Only add limiter here if ASMR is on but master is off (finalize handles limiting when master_enabled)
-    if asmr_enabled and not master_enabled:
+    # Add limiter when ASMR is enabled to prevent clipping from compression/EQ
+    if asmr_enabled:
         filters.append("alimiter=limit=0.95:attack=5:release=50")
     
     # Build and run main filter chain
-    # Note: Loudness normalization (loudnorm) is handled by finalize_and_master() at the end
-    # when master_enabled=True, using user's LUFS/peak settings
     filter_str = ",".join(filters) if filters else "anull"
 
     fd, tmp = tempfile.mkstemp(suffix="_post.wav")
@@ -1359,6 +1402,7 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
     log_info(f"[POST] FFmpeg main pass: {(t_ffmpeg_end - t_ffmpeg_start)*1000:.0f}ms, filters: {len(filters)}")
     
     current_file = tmp
+    log_info(f"[POST] FFmpeg done, current_file exists: {os.path.exists(current_file)}, size: {os.path.getsize(current_file) if os.path.exists(current_file) else 0}")
     
     # ===== SEPARATE PASS: Pitch Shift (requires sample rate manipulation) =====
     if pitch_shift_enabled:
@@ -1369,7 +1413,6 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
         pitch_factor = 2 ** (semitones / 12.0)
         
         # Build pitch filter
-        # Note: Loudness normalization handled by finalize_and_master() after pitch shift
         pitch_filters = [f"asetrate=44100*{pitch_factor:.6f}", "aresample=44100", "atempo=1"]
         pitch_filter = ",".join(pitch_filters)
         pitch_cmd = build_ffmpeg_base_cmd(current_file, tmp_pitch, filters=pitch_filter)
@@ -1385,7 +1428,7 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
             pass
         current_file = tmp_pitch
     
-    # ===== SEPARATE PASS: Python Spatial Audio (for immersive 8D) =====
+    # ===== SEPARATE PASS: Python Spatial Audio (for immersive 8D/16D) =====
     if use_python_spatial and spatial_params:
         import numpy as np
         t_spatial_start = time.perf_counter()
@@ -1395,9 +1438,33 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
         
         try:
             # Read current audio
+            log_info(f"[POST] Spatial: Reading audio file...")
+            t_read = time.perf_counter()
             audio_data, sample_rate = sf.read(current_file)
             
-            # Apply Python spatial audio processing
+            # Calculate file info for logging
+            duration_sec = len(audio_data) / sample_rate
+            file_size_mb = (audio_data.nbytes) / (1024 * 1024)
+            log_info(f"[POST] Spatial: Loaded {file_size_mb:.1f}MB ({duration_sec:.1f}s @ {sample_rate}Hz) in {(time.perf_counter()-t_read)*1000:.0f}ms")
+            
+            # Get enhanced spatial parameters
+            spatial_quality = post_params.get("audio_8d_quality", "balanced")  # fast/balanced/ultra
+            spatial_distance = avg_distance if 'avg_distance' in dir() else 0.5
+            
+            # Warn about large files
+            if duration_sec > 300:  # > 5 minutes
+                log_warn(f"[POST] Spatial: Large file ({duration_sec/60:.1f} min) - processing may take a while...")
+            
+            # Get time offset for streaming continuity
+            time_offset = post_params.get("spatial_time_offset", 0.0)
+            if time_offset > 0:
+                log_info(f"[POST] Spatial: Streaming mode, time_offset={time_offset:.2f}s")
+            
+            log_info(f"[POST] Spatial: Starting {spatial_quality} processing...")
+            t_process = time.perf_counter()
+            
+            # Apply Python spatial audio processing with enhanced features
+            # time_offset is for streaming: maintains panning phase across chunks
             stereo_output = process_spatial_audio_buffer(
                 audio_data,
                 sample_rate,
@@ -1407,10 +1474,25 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
                 end_angle=spatial_params.get("end_angle", 90.0),
                 head_shadow=spatial_params.get("head_shadow", True),
                 head_shadow_intensity=spatial_params.get("head_shadow_intensity", 0.4),
+                # Enhanced parameters for ultra-realistic spatial audio
+                quality=spatial_quality,
+                distance=spatial_distance,
+                # Let quality preset handle these, but allow explicit override
+                itd_enabled=post_params.get("audio_8d_itd", None),
+                proximity_enabled=post_params.get("audio_8d_proximity", None),
+                crossfeed_enabled=post_params.get("audio_8d_crossfeed", None),
+                micro_movements=post_params.get("audio_8d_micro_movements", None),
+                speech_aware=post_params.get("audio_8d_speech_aware", True),
+                time_offset=time_offset,  # For streaming continuity
             )
             
+            log_info(f"[POST] Spatial: Processing done in {(time.perf_counter()-t_process)*1000:.0f}ms")
+            
             # Write output
+            log_info(f"[POST] Spatial: Writing output...")
+            t_write = time.perf_counter()
             sf.write(tmp_spatial, stereo_output, sample_rate)
+            log_info(f"[POST] Spatial: Write done in {(time.perf_counter()-t_write)*1000:.0f}ms")
             
             # Clean up previous temp file
             try:
@@ -1420,33 +1502,16 @@ def post_process_voice(main_wav_path: str, post_params: Dict[str, Any]) -> str:
             current_file = tmp_spatial
             
             t_spatial_end = time.perf_counter()
-            log_info(f"[POST] Python spatial audio: {(t_spatial_end - t_spatial_start)*1000:.0f}ms")
+            log_info(f"[POST] Python spatial audio ({spatial_quality}): {(t_spatial_end - t_spatial_start)*1000:.0f}ms total")
         except Exception as e:
-            log_error(f"[POST] Python spatial audio failed: {e}, falling back to FFmpeg output")
+            import traceback
+            log_error(f"[POST] Python spatial audio failed: {e}")
+            log_error(f"[POST] Traceback: {traceback.format_exc()}")
             _safe_unlink(tmp_spatial)
     
     t_end = time.perf_counter()
-    log_info(f"[POST] Effects: {(t_end - t_start)*1000:.0f}ms")
-    
-    # Finalize: mono→stereo, noise reduction, loudness normalization, limiting
-    # Only run if user explicitly enables master_enabled
-    if post_params.get("master_enabled", False):
-        t_finalize = time.perf_counter()
-        target_lufs = post_params.get("master_target_lufs", -16.0)
-        true_peak = post_params.get("master_true_peak", -1.5)
-        noise_reduction = post_params.get("master_noise_reduction", 6.0)
-        finalized = finalize_and_master(current_file, target_lufs, true_peak, noise_reduction)
-        # Clean up pre-finalize temp file
-        if current_file != main_wav_path:
-            try:
-                os.remove(current_file)
-            except:
-                pass
-        current_file = finalized
-        log_info(f"[POST] Finalize: {(time.perf_counter() - t_finalize)*1000:.0f}ms")
-    
-    t_total = time.perf_counter()
-    log_info(f"[POST] Total: {(t_total - t_start)*1000:.0f}ms")
+    log_info(f"[POST] Total: {(t_end - t_start)*1000:.0f}ms")
+    log_info(f"[POST] Returning file: {current_file}, exists: {os.path.exists(current_file)}, size: {os.path.getsize(current_file) if os.path.exists(current_file) else 0}")
     return current_file
 
 
@@ -1616,43 +1681,6 @@ def blend_with_background(
     return tmp
 
 
-def finalize_and_master(main_wav_path: str, target_lufs: float = -16.0, true_peak: float = -1.5, noise_reduction: float = 6.0) -> str:
-    # aformat: Convert to floating-point (required by afftdn)
-    # afftdn: FFT-based noise reduction (configurable intensity)
-    # loudnorm: EBU R128 loudness normalization (uses user's target LUFS and true peak)
-    # alimiter: Hard limiter to prevent clipping
-    # Note: No stereo conversion here - post-process handles that when stereo effects are enabled
-    limiter_level = 10 ** (true_peak / 20) * 0.95  # Convert dBTP to linear, slight headroom
-    
-    # Configurable noise reduction: nr=intensity (0-12), nf=threshold
-    # Clamp noise_reduction to valid range: 0-12
-    nr_intensity = max(0.0, min(12.0, noise_reduction))
-    # Calculate noise floor threshold: lower (more negative) = more aggressive
-    # Scale from -15dB (gentle) to -30dB (aggressive) based on intensity
-    nf_threshold = -15.0 - (nr_intensity * 1.25)  # -15dB at 0, -30dB at 12
-    
-    # If noise reduction is 0, skip it entirely for maximum clarity
-    if nr_intensity <= 0:
-        filters = (
-            f"aformat=sample_fmts=fltp,"
-            f"loudnorm=I={target_lufs}:TP={true_peak}:LRA=11:dual_mono=true,"
-            f"alimiter=limit={limiter_level:.3f}"
-        )
-    else:
-        filters = (
-            f"aformat=sample_fmts=fltp,"
-            f"afftdn=nr={nr_intensity:.0f}:nf={nf_threshold:.0f},"
-            f"loudnorm=I={target_lufs}:TP={true_peak}:LRA=11:dual_mono=true,"
-            f"alimiter=limit={limiter_level:.3f}"
-        )
-    fd, tmp = tempfile.mkstemp(suffix="_final.wav")
-    os.close(fd)
-    # Don't force output channels - preserve mono/stereo from post-process
-    cmd = build_ffmpeg_base_cmd(main_wav_path, tmp, filters=filters)
-    subprocess.run(cmd, check=True)
-    return tmp
-
-
 def save_output(src_path: str, text: str) -> str:
     ensure_dir(OUTPUT_DIR)
     words = re.findall(r"\w+", text)[:4]
@@ -1680,40 +1708,28 @@ async def api_postprocess(
     bass_gain: float = Form(4.0),
     treble_freq: float = Form(8000.0),
     treble_gain: float = Form(2.0),
-    reverb_in_gain: float = Form(0.0),
-    reverb_out_gain: float = Form(0.0),
     reverb_delay: float = Form(0.0),
     reverb_decay: float = Form(0.0),
     crystalizer: float = Form(0.0),
     deesser: float = Form(0.0),
-    stereo_width: float = Form(1.0),
-    air_freq: float = Form(10000.0),
-    air_gain: float = Form(0.0),
-    air_width: float = Form(1.0),
-    master_enabled: bool = Form(False),
-    master_target_lufs: float = Form(-14.0),
-    master_true_peak: float = Form(-1.0),
-    master_noise_reduction: float = Form(6.0),
     audio_8d_enabled: bool = Form(False),
     audio_8d_mode: str = Form("rotate"),
     audio_8d_speed: float = Form(0.1),
-    audio_8d_depth: float = Form(0.8),
-    audio_8d_start_angle: float = Form(270.0),
-    audio_8d_end_angle: float = Form(90.0),
-    audio_8d_start_distance: float = Form(1.0),
-    audio_8d_end_distance: float = Form(1.0),
-    audio_8d_loop: bool = Form(True),
-    audio_8d_reverb: bool = Form(True),
+    audio_8d_depth: float = Form(180.0),  # Arc in degrees
+    audio_8d_distance: float = Form(0.3),  # 0=touching ear, 1=far
+    audio_8d_quality: str = Form("balanced"),  # fast/balanced/ultra
+    audio_8d_itd: bool = Form(None),  # Override: Interaural Time Difference
+    audio_8d_proximity: bool = Form(None),  # Override: Near-field proximity effect
+    audio_8d_crossfeed: bool = Form(None),  # Override: Natural crossfeed
+    audio_8d_micro_movements: bool = Form(None),  # Override: Organic micro-movements
+    audio_8d_speech_aware: bool = Form(True),  # Speech-aware transitions (snap to pauses)
+    spatial_time_offset: float = Form(0.0),  # For streaming: accumulated time from previous chunks
     pitch_shift_enabled: bool = Form(False),
     pitch_shift_semitones: int = Form(0),
     asmr_enabled: bool = Form(False),
-    asmr_intimacy: int = Form(70),
     asmr_tingles: int = Form(60),
     asmr_breathiness: int = Form(65),
     asmr_crispness: int = Form(55),
-    asmr_warmth: int = Form(60),
-    asmr_depth: int = Form(40),
-    asmr_binaural: bool = Form(True),
 ):
     log_info(f"[POST] Received request, reading audio file: {audio.filename}")
     
@@ -1737,51 +1753,52 @@ async def api_postprocess(
             "bass_gain": bass_gain,
             "treble_freq": treble_freq,
             "treble_gain": treble_gain,
-            "reverb_in_gain": reverb_in_gain,
-            "reverb_out_gain": reverb_out_gain,
             "reverb_delay": reverb_delay,
             "reverb_decay": reverb_decay,
             "crystalizer": crystalizer,
             "deesser": deesser,
-            "stereo_width": stereo_width,
-            "air_freq": air_freq,
-            "air_gain": air_gain,
-            "air_width": air_width,
-            "master_enabled": master_enabled,
-            "master_target_lufs": master_target_lufs,
-            "master_true_peak": master_true_peak,
-            "master_noise_reduction": master_noise_reduction,
             "audio_8d_enabled": audio_8d_enabled,
             "audio_8d_mode": audio_8d_mode,
             "audio_8d_speed": audio_8d_speed,
             "audio_8d_depth": audio_8d_depth,
-            "audio_8d_start_angle": audio_8d_start_angle,
-            "audio_8d_end_angle": audio_8d_end_angle,
-            "audio_8d_start_distance": audio_8d_start_distance,
-            "audio_8d_end_distance": audio_8d_end_distance,
-            "audio_8d_loop": audio_8d_loop,
-            "audio_8d_reverb": audio_8d_reverb,
+            "audio_8d_distance": audio_8d_distance,
+            "audio_8d_quality": audio_8d_quality,
+            "audio_8d_itd": audio_8d_itd,
+            "audio_8d_proximity": audio_8d_proximity,
+            "audio_8d_crossfeed": audio_8d_crossfeed,
+            "audio_8d_micro_movements": audio_8d_micro_movements,
+            "audio_8d_speech_aware": audio_8d_speech_aware,
+            "spatial_time_offset": spatial_time_offset,
             "pitch_shift_enabled": pitch_shift_enabled,
             "pitch_shift_semitones": pitch_shift_semitones,
             "asmr_enabled": asmr_enabled,
-            "asmr_intimacy": asmr_intimacy,
             "asmr_tingles": asmr_tingles,
             "asmr_breathiness": asmr_breathiness,
             "asmr_crispness": asmr_crispness,
-            "asmr_warmth": asmr_warmth,
-            "asmr_depth": asmr_depth,
-            "asmr_binaural": asmr_binaural,
         }
 
+        log_info(f"[POST] Calling post_process_voice...")
         output_path = post_process_voice(tmp_input, params)
-        return FileResponse(
+        log_info(f"[POST] post_process_voice returned: {output_path}")
+        
+        if not os.path.exists(output_path):
+            raise HTTPException(status_code=500, detail=f"Output file not found: {output_path}")
+        
+        output_size = os.path.getsize(output_path)
+        log_info(f"[POST] Creating FileResponse for {output_size / (1024*1024):.1f}MB file...")
+        
+        response = FileResponse(
             output_path,
             media_type="audio/wav",
             filename="postprocessed.wav",
             background=BackgroundTask(_cleanup_many, [tmp_input, output_path]),
         )
+        log_info(f"[POST] FileResponse created, returning to client")
+        return response
     except Exception as e:
-        log_error(f"Post-processing error: {e}")
+        import traceback
+        log_error(f"Post-processing error: {type(e).__name__}: {e}")
+        log_error(f"Traceback: {traceback.format_exc()}")
         _cleanup_many([tmp_input])
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1825,28 +1842,6 @@ async def api_blend(
         )
     except Exception as e:
         log_error(f"Blend error: {e}")
-        _cleanup_many([tmp_input])
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/v1/master")
-async def api_master(audio: UploadFile = File(...)):
-    fd, tmp_input = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    try:
-        content = await audio.read()
-        with open(tmp_input, "wb") as f:
-            f.write(content)
-
-        output_path = finalize_and_master(tmp_input)
-        return FileResponse(
-            output_path,
-            media_type="audio/wav",
-            filename="mastered.wav",
-            background=BackgroundTask(_cleanup_many, [tmp_input, output_path]),
-        )
-    except Exception as e:
-        log_error(f"Master error: {e}")
         _cleanup_many([tmp_input])
         raise HTTPException(status_code=500, detail=str(e))
 

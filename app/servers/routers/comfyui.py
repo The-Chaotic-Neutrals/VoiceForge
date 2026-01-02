@@ -237,6 +237,23 @@ async def list_workflows(path: Optional[str] = None, _: bool = Depends(verify_au
                     "source": "local",
                 })
     
+    # Check bundled ComfyUI's user workflows directory
+    bundled_comfyui_workflows = os.path.join(APP_DIR, "comfyui", "ComfyUI", "user", "default", "workflows")
+    if os.path.exists(bundled_comfyui_workflows):
+        seen_names = {wf["name"] for wf in workflows}  # Avoid duplicates from userdata API
+        for root, dirs, files in os.walk(bundled_comfyui_workflows):
+            for f in files:
+                if f.endswith('.json'):
+                    name = os.path.splitext(f)[0]
+                    if name not in seen_names:
+                        full_path = os.path.join(root, f)
+                        workflows.append({
+                            "name": name,
+                            "path": full_path,
+                            "source": "local",
+                        })
+                        seen_names.add(name)
+    
     return {"workflows": workflows}
 
 

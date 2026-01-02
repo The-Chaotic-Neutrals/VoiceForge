@@ -364,22 +364,6 @@
                                 <label for="deesser" title="Reduces harsh 's' sounds. Try: 0.3-0.5">De-esser</label>
                                 <input type="number" id="deesser" value="0" min="0" max="1" step="0.01" placeholder="0.3-0.5" aria-label="De-esser intensity">
                             </div>
-                            <div class="form-group">
-                                <label for="stereo-width" title="1=mono, >1=wider. Try: 1.2-1.8">Stereo Width</label>
-                                <input type="number" id="stereo-width" value="1" min="1" max="4" step="0.1" placeholder="1.2-1.8" aria-label="Stereo width">
-                            </div>
-                            <div class="form-group">
-                                <label for="air-freq" title="Air frequency. Try: 10000-12000Hz">Air (Hz)</label>
-                                <input type="number" id="air-freq" value="10000" min="8000" max="20000" placeholder="10000-12000" aria-label="Air frequency">
-                            </div>
-                            <div class="form-group">
-                                <label for="air-gain" title="High-freq sparkle. Try: 4-8dB">Air (dB)</label>
-                                <input type="number" id="air-gain" value="0" min="-12" max="24" step="0.1" placeholder="4-8" aria-label="Air gain">
-                            </div>
-                            <div class="form-group">
-                                <label for="air-width" title="Air bandwidth. Try: 1-2 octaves">Air Width</label>
-                                <input type="number" id="air-width" value="1" min="0.1" max="4" step="0.1" placeholder="1-2" aria-label="Air width">
-                            </div>
                         </div>
                     </div>
                     
@@ -388,56 +372,30 @@
                         <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Reverb</div>
                         <div class="form-grid" style="gap: 10px;">
                             <div class="form-group">
-                                <label for="reverb-in" title="Input gain. Try: 0.6-0.9">In Gain</label>
-                                <input type="number" id="reverb-in" value="0" min="0" max="2" step="0.01" placeholder="0.6-0.9" aria-label="Reverb in gain">
-                            </div>
-                            <div class="form-group">
-                                <label for="reverb-out" title="Output gain. Try: 0.7-0.95">Out Gain</label>
-                                <input type="number" id="reverb-out" value="0" min="0" max="2" step="0.01" placeholder="0.7-0.95" aria-label="Reverb out gain">
-                            </div>
-                            <div class="form-group">
-                                <label for="reverb-delay" title="Echo delay. Try: 20-60ms">Delay (ms)</label>
+                                <label for="reverb-delay" title="Echo delay in milliseconds. Try: 20-60ms for room, 100-200ms for hall">Delay (ms)</label>
                                 <input type="number" id="reverb-delay" value="0" min="0" max="500" placeholder="20-60" aria-label="Reverb delay">
                             </div>
                             <div class="form-group">
-                                <label for="reverb-decay" title="Tail length. Try: 0.1-0.4">Decay</label>
-                                <input type="number" id="reverb-decay" value="0" min="0" max="10" step="0.01" placeholder="0.1-0.4" aria-label="Reverb decay">
+                                <label for="reverb-decay" title="Echo decay/feedback. Try: 0.1-0.4 for subtle, 0.5+ for long tails">Decay</label>
+                                <input type="number" id="reverb-decay" value="0" min="0" max="0.9" step="0.05" placeholder="0.1-0.4" aria-label="Reverb decay">
                             </div>
                         </div>
                     </div>
                     
-                    <!-- Loudness & Pitch Row -->
+                    <!-- Pitch Shift Row -->
                     <div>
-                        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Loudness & Pitch</div>
+                        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Pitch Shift</div>
                         <div class="form-grid" style="gap: 10px;">
                             <div class="form-group">
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="master-enabled" aria-label="Enable loudness normalization">
-                                    <span>Normalize Loudness</span>
-                            </label>
-                        </div>
-                        <div class="form-group">
-                                <label for="master-target-lufs">Target (LUFS)</label>
-                                <input type="number" id="master-target-lufs" value="-14" min="-24" max="-5" step="0.5" aria-label="Target LUFS">
-                            </div>
-                            <div class="form-group">
-                                <label for="master-true-peak">True Peak (dBTP)</label>
-                                <input type="number" id="master-true-peak" value="-1.0" min="-6" max="0" step="0.1" aria-label="True peak limit">
-                            </div>
-                            <div class="form-group">
-                                <label for="master-noise-reduction">Noise Reduction</label>
-                                <input type="number" id="master-noise-reduction" value="6" min="0" max="12" step="1" aria-label="Noise reduction intensity (0=off, 12=max)">
-                                <small style="display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px;">0=off, 6=moderate (default), 12=max</small>
-                            </div>
-                            <div class="form-group">
-                                <label class="checkbox-label">
                                     <input type="checkbox" id="pitch-shift-enabled" aria-label="Enable pitch shift">
-                                    <span>Pitch Shift</span>
-                            </label>
-                        </div>
-                        <div class="form-group">
+                                    <span>Enable Pitch Shift</span>
+                                </label>
+                            </div>
+                            <div class="form-group">
                                 <label for="pitch-shift-semitones">Semitones</label>
                                 <input type="number" id="pitch-shift-semitones" value="0" min="-12" max="12" step="1" aria-label="Pitch shift semitones">
+                                <small style="display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px;">-12 to +12 (negative = lower, positive = higher)</small>
                             </div>
                         </div>
                     </div>
@@ -454,16 +412,6 @@
                                     <span>Enable ASMR Mode</span>
                             </label>
                         </div>
-                        <div class="form-group">
-                                <label for="asmr-intimacy" class="label-with-help">
-                                    Intimacy
-                                    <span class="help-icon" title="How close the voice feels. Higher = more compression, warmer, right in your ear.">?</span>
-                            </label>
-                                <input type="range" id="asmr-intimacy" value="70" min="0" max="100" step="5" style="width: 100%;" aria-label="Intimacy level">
-                                <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); margin-top: 2px;">
-                                    <span>Distant</span><span>In Your Ear</span>
-                        </div>
-                    </div>
                             <div class="form-group">
                                 <label for="asmr-tingles" class="label-with-help">
                                     Tingles
@@ -494,43 +442,13 @@
                                     <span>Smooth</span><span>Crispy</span>
                                 </div>
                         </div>
-                        <div class="form-group">
-                                <label for="asmr-warmth" class="label-with-help">
-                                    Warmth
-                                    <span class="help-icon" title="Low frequency warmth that creates a cozy, enveloping feeling.">?</span>
-                            </label>
-                                <input type="range" id="asmr-warmth" value="60" min="0" max="100" step="5" style="width: 100%;" aria-label="Warmth level">
-                                <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); margin-top: 2px;">
-                                    <span>Neutral</span><span>Cozy 🔥</span>
-                                </div>
-                        </div>
-                        <div class="form-group">
-                                <label for="asmr-depth" class="label-with-help">
-                                    Spatial Depth
-                                    <span class="help-icon" title="Intimate room reflections. Creates sense of being in a cozy space with the speaker.">?</span>
-                            </label>
-                                <input type="range" id="asmr-depth" value="40" min="0" max="100" step="5" style="width: 100%;" aria-label="Spatial depth">
-                                <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); margin-top: 2px;">
-                                    <span>Dry</span><span>Intimate Room</span>
-                                </div>
-                        </div>
-                        <div class="form-group">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="asmr-binaural" checked aria-label="Enable binaural effect">
-                                    <span>Binaural Processing</span>
-                            </label>
-                                <div style="font-size: 9px; color: var(--text-muted); margin-top: 2px;">
-                                    Ear delay + stereo widening for headphone listening
-                                </div>
-                            </div>
                         </div>
                         <div style="margin-top: 12px; padding: 10px; background: linear-gradient(135deg, rgba(138, 43, 226, 0.15), rgba(30, 144, 255, 0.1)); border-radius: var(--radius-sm); font-size: 10px; color: var(--text-muted); border: 1px solid rgba(138, 43, 226, 0.2);">
-                            <div style="margin-bottom: 6px;">🎧 <strong style="color: var(--accent);">Tingle Tips:</strong></div>
+                            <div style="margin-bottom: 6px;">🎧 <strong style="color: var(--accent);">ASMR Guide:</strong></div>
                             <ul style="margin: 0; padding-left: 16px; line-height: 1.5;">
-                                <li><strong>Headphones required</strong> for binaural effects</li>
-                                <li><strong>Tingles 60-80%</strong> for that spine-tingling sensation</li>
-                                <li><strong>Intimacy + Warmth high</strong> = cozy whisper in your ear</li>
-                                <li><strong>Spatial Audio</strong> below for immersive ear-to-ear motion</li>
+                                <li><strong>ASMR = tonal shaping</strong> (tingles, breath, compression)</li>
+                                <li><strong>Spatial Audio below</strong> = positioning, movement + warmth (via Proximity)</li>
+                                <li><strong>Best combo:</strong> ASMR + Spatial with low Distance</li>
                             </ul>
                         </div>
                     </div>
@@ -543,8 +461,11 @@
                     <div class="form-group" style="margin-bottom: 16px;">
                         <label class="checkbox-label">
                             <input type="checkbox" id="audio-8d-enabled">
-                            <span>Enable Immersive Panning</span>
+                            <span>Enable Spatial Audio</span>
                         </label>
+                        <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">
+                            Immersive binaural: ITD, head shadow, proximity, crossfeed, panning
+                        </div>
                     </div>
                     
                     <!-- Visualization + Controls Container -->
@@ -612,8 +533,9 @@
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
                             <!-- Mode -->
                             <div class="form-group">
-                                <label for="audio-8d-mode" style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px; display: block;">Movement Mode</label>
+                                <label for="audio-8d-mode" style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px; display: block;">Position / Movement</label>
                                 <select id="audio-8d-mode" style="width: 100%; padding: 8px; font-size: 12px;">
+                                    <option value="center">🎯 Center (Binaural)</option>
                                     <option value="extreme" selected>👂 Ear Zones (dwell L/R)</option>
                                     <option value="sweep">↔ Linear Sweep</option>
                                     <option value="rotate">〰 Smooth Rotation</option>
@@ -638,19 +560,86 @@
                                 <input type="range" id="audio-8d-depth" value="180" min="0" max="360" step="1" style="width: 100%;">
                             </div>
                             
-                            <!-- Reverb Toggle -->
-                            <div class="form-group" style="display: flex; align-items: center; gap: 8px; padding-top: 18px;">
-                                <input type="checkbox" id="audio-8d-reverb" style="width: 16px; height: 16px;">
-                                <label for="audio-8d-reverb" style="font-size: 11px; color: var(--text-muted); cursor: pointer;">Add Space/Reverb</label>
+                        </div>
+                        
+                        <!-- Enhanced Spatial Settings -->
+                        <div style="margin-top: 16px; padding: 14px; background: rgba(100,200,255,0.05); border-radius: var(--radius-md); border: 1px solid rgba(100,200,255,0.15);">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer;" onclick="toggleSpatialAdvanced()">
+                                <span id="spatial-advanced-arrow" style="transition: transform 0.2s;">▶</span>
+                                <span style="font-size: 12px; font-weight: 500; color: var(--text);">Enhanced Binaural (8D/16D)</span>
+                                <span style="font-size: 10px; padding: 2px 6px; background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: #000; border-radius: 4px; font-weight: 600;">NEW</span>
+                            </div>
+                            
+                            <div id="spatial-advanced-panel" style="display: none;">
+                                <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
+                                    Ultra-realistic spatial audio with ITD (ear timing), head shadow, proximity effects, and natural crossfeed.
+                                </p>
+                                
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px;">
+                                    <!-- Quality Preset -->
+                                    <div class="form-group">
+                                        <label for="audio-8d-quality" style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px; display: block;">
+                                            Quality Preset
+                                        </label>
+                                        <select id="audio-8d-quality" style="width: 100%; padding: 8px; font-size: 12px;">
+                                            <option value="fast">⚡ Fast (streaming)</option>
+                                            <option value="balanced" selected>⚖️ Balanced</option>
+                                            <option value="ultra">✨ Ultra (ASMR)</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <!-- Distance/Proximity - controls the enhanced proximity effect -->
+                                    <div class="form-group">
+                                        <label for="audio-8d-distance" style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px; display: block;">
+                                            Distance: <span id="distance-display">0.3</span> <span style="opacity: 0.6">(0=in ear)</span>
+                                        </label>
+                                        <input type="range" id="audio-8d-distance" value="0.3" min="0" max="1" step="0.01" style="width: 100%;">
+                                        <div style="font-size: 9px; color: var(--text-muted); margin-top: 2px;">
+                                            Controls bass+presence boost (proximity effect)
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Feature Toggles -->
+                                <div style="margin-top: 12px; padding: 10px; background: var(--input-bg); border-radius: var(--radius-sm);">
+                                    <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Feature Overrides (auto by preset)</div>
+                                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+                                        <label class="checkbox-label" style="font-size: 11px;">
+                                            <input type="checkbox" id="audio-8d-itd" checked>
+                                            <span title="Interaural Time Difference - the ~0.7ms delay between ears for realism">🕐 ITD (timing)</span>
+                                        </label>
+                                        <label class="checkbox-label" style="font-size: 11px;">
+                                            <input type="checkbox" id="audio-8d-proximity" checked>
+                                            <span title="Bass boost and presence when close - the 'in your ear' ASMR feel">👂 Proximity</span>
+                                        </label>
+                                        <label class="checkbox-label" style="font-size: 11px;">
+                                            <input type="checkbox" id="audio-8d-crossfeed" checked>
+                                            <span title="Natural bleed between ears - sounds more realistic than isolated headphones">🔀 Crossfeed</span>
+                                        </label>
+                                        <label class="checkbox-label" style="font-size: 11px;">
+                                            <input type="checkbox" id="audio-8d-micro-movements" checked>
+                                            <span title="Subtle organic variation - prevents robotic/artificial feel">🌊 Micro-moves</span>
+                                        </label>
+                                        <label class="checkbox-label" style="font-size: 11px; grid-column: span 2;">
+                                            <input type="checkbox" id="audio-8d-speech-aware" checked>
+                                            <span title="Transitions happen at natural speech pauses - prevents jarring mid-word ear swaps">🗣️ Speech-Aware Transitions</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <!-- Mode Info -->
+                                <div style="margin-top: 10px; padding: 8px; background: rgba(100,200,100,0.1); border-radius: var(--radius-sm); border-left: 3px solid #4CAF50;">
+                                    <div style="font-size: 10px; color: #4CAF50; font-weight: 600; margin-bottom: 4px;">🎧 Position Modes</div>
+                                    <div style="font-size: 10px; color: var(--text-muted); line-height: 1.5;">
+                                        <strong>Center:</strong> Stationary front position with full spatial quality<br>
+                                        <strong>Ear Zones:</strong> Dwells at left/right ears (best for ASMR)<br>
+                                        <strong>Sweep/Rotate:</strong> Continuous movement patterns<br>
+                                        <strong>Static L/R:</strong> Fixed position at one ear
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         
-                        <!-- Hidden inputs for compatibility -->
-                        <input type="hidden" id="audio-8d-start-angle" value="270">
-                        <input type="hidden" id="audio-8d-end-angle" value="90">
-                        <input type="hidden" id="audio-8d-start-distance" value="0.5">
-                        <input type="hidden" id="audio-8d-end-distance" value="0.5">
-                        <input type="hidden" id="audio-8d-loop" value="true">
                     </div>
                 </div>
 
@@ -1226,7 +1215,18 @@
                 
                 // For range inputs, also update the associated value display span
                 if (el.type === 'range') {
-                    const valueSpan = document.getElementById(el.id + '-value');
+                    let valueSpan = document.getElementById(el.id + '-value');
+                    // Handle special spatial audio display spans
+                    if (!valueSpan) {
+                        const specialMappings = {
+                            'audio-8d-speed': 'speed-display',
+                            'audio-8d-depth': 'depth-display',
+                            'audio-8d-distance': 'distance-display'
+                        };
+                        if (specialMappings[el.id]) {
+                            valueSpan = document.getElementById(specialMappings[el.id]);
+                        }
+                    }
                     if (valueSpan) valueSpan.textContent = el.value;
                 }
             });
@@ -1262,6 +1262,14 @@
             // Trigger change events for checkboxes that control visibility
             const spatialCheckbox = document.getElementById('audio-8d-enabled');
             if (spatialCheckbox) spatialCheckbox.dispatchEvent(new Event('change'));
+            
+            // Trigger ASMR mode checkbox too
+            const asmrCheckbox = document.getElementById('asmr-enabled');
+            if (asmrCheckbox) asmrCheckbox.dispatchEvent(new Event('change'));
+            
+            // Update spatial mode dropdown (may hide/show speed slider)
+            const spatialMode = document.getElementById('audio-8d-mode');
+            if (spatialMode) spatialMode.dispatchEvent(new Event('change'));
         }
         
         async function saveSettings() {
@@ -1307,40 +1315,27 @@
                 bass_gain: getFloatValue('bass-gain', 4),
                 treble_freq: getFloatValue('treble-freq', 8000),
                 treble_gain: getFloatValue('treble-gain', 2),
-                reverb_in_gain: getFloatValue('reverb-in', 0.8),
-                reverb_out_gain: getFloatValue('reverb-out', 0.88),
                 reverb_delay: getFloatValue('reverb-delay', 0),
                 reverb_decay: getFloatValue('reverb-decay', 0),
                 crystalizer: getFloatValue('crystalizer', 0),
                 deesser: getFloatValue('deesser', 0),
-                stereo_width: getFloatValue('stereo-width', 1),
-                air_freq: getFloatValue('air-freq', 10000),
-                air_gain: getFloatValue('air-gain', 0),
-                air_width: getFloatValue('air-width', 1.5),
-                master_enabled: getElementChecked('master-enabled'),
-                master_target_lufs: getFloatValue('master-target-lufs', -14),
-                master_true_peak: getFloatValue('master-true-peak', -1.0),
-                master_noise_reduction: getFloatValue('master-noise-reduction', 6),
                 audio_8d_enabled: getElementChecked('audio-8d-enabled'),
                 audio_8d_mode: getElementValue('audio-8d-mode') || 'rotate',
                 audio_8d_speed: getFloatValue('audio-8d-speed', 0.1),
-                audio_8d_depth: getFloatValue('audio-8d-depth', 0.8),
-                audio_8d_start_angle: getFloatValue('audio-8d-start-angle', 270),
-                audio_8d_end_angle: getFloatValue('audio-8d-end-angle', 90),
-                audio_8d_start_distance: getFloatValue('audio-8d-start-distance', 1.0),
-                audio_8d_end_distance: getFloatValue('audio-8d-end-distance', 1.0),
-                audio_8d_loop: getElementChecked('audio-8d-loop'),
-                audio_8d_reverb: getElementChecked('audio-8d-reverb'),
+                audio_8d_depth: getFloatValue('audio-8d-depth', 180),
+                audio_8d_distance: getFloatValue('audio-8d-distance', 0.3),
+                audio_8d_quality: getElementValue('audio-8d-quality') || 'balanced',
+                audio_8d_itd: getElementChecked('audio-8d-itd'),
+                audio_8d_proximity: getElementChecked('audio-8d-proximity'),
+                audio_8d_crossfeed: getElementChecked('audio-8d-crossfeed'),
+                audio_8d_micro_movements: getElementChecked('audio-8d-micro-movements'),
+                audio_8d_speech_aware: getElementChecked('audio-8d-speech-aware'),
                 pitch_shift_enabled: getElementChecked('pitch-shift-enabled'),
                 pitch_shift_semitones: getIntValue('pitch-shift-semitones', 0),
                 asmr_enabled: getElementChecked('asmr-enabled'),
-                asmr_intimacy: getIntValue('asmr-intimacy', 70),
                 asmr_tingles: getIntValue('asmr-tingles', 60),
                 asmr_breathiness: getIntValue('asmr-breathiness', 65),
                 asmr_crispness: getIntValue('asmr-crispness', 55),
-                asmr_warmth: getIntValue('asmr-warmth', 60),
-                asmr_depth: getIntValue('asmr-depth', 40),
-                asmr_binaural: getElementChecked('asmr-binaural'),
                 bg_files: getElementChecked('enable-background') && typeof getBgTracks === 'function' ? getBgTracks().map(t=>t.file).filter(f=>f) : [],
                 bg_volumes: getElementChecked('enable-background') && typeof getBgTracks === 'function' ? getBgTracks().map(t=>parseFloat(t.volume)||0) : [],
                 bg_delays: getElementChecked('enable-background') && typeof getBgTracks === 'function' ? getBgTracks().map(t=>parseFloat(t.delay)||0) : [],
@@ -1371,40 +1366,27 @@
                 bass_gain: getFloatValue('bass-gain', 4),
                 treble_freq: getFloatValue('treble-freq', 8000),
                 treble_gain: getFloatValue('treble-gain', 2),
-                reverb_in_gain: getFloatValue('reverb-in', 0),
-                reverb_out_gain: getFloatValue('reverb-out', 0),
                 reverb_delay: getFloatValue('reverb-delay', 0),
                 reverb_decay: getFloatValue('reverb-decay', 0),
                 crystalizer: getFloatValue('crystalizer', 0),
                 deesser: getFloatValue('deesser', 0),
-                stereo_width: getFloatValue('stereo-width', 1),
-                air_freq: getFloatValue('air-freq', 10000),
-                air_gain: getFloatValue('air-gain', 0),
-                normalize: getElementChecked('normalize'),
-                master_enabled: getElementChecked('master-enabled'),
-                master_target_lufs: getFloatValue('master-target-lufs', -14),
-                master_true_peak: getFloatValue('master-true-peak', -1.0),
-                master_noise_reduction: getFloatValue('master-noise-reduction', 6),
                 audio_8d_enabled: getElementChecked('audio-8d-enabled'),
                 audio_8d_mode: getElementValue('audio-8d-mode') || 'rotate',
                 audio_8d_speed: getFloatValue('audio-8d-speed', 0.1),
-                audio_8d_depth: getFloatValue('audio-8d-depth', 0.8),
-                audio_8d_start_angle: getFloatValue('audio-8d-start-angle', 270),
-                audio_8d_end_angle: getFloatValue('audio-8d-end-angle', 90),
-                audio_8d_start_distance: getFloatValue('audio-8d-start-distance', 1.0),
-                audio_8d_end_distance: getFloatValue('audio-8d-end-distance', 1.0),
-                audio_8d_loop: getElementChecked('audio-8d-loop'),
-                audio_8d_reverb: getElementChecked('audio-8d-reverb'),
+                audio_8d_depth: getFloatValue('audio-8d-depth', 180),
+                audio_8d_distance: getFloatValue('audio-8d-distance', 0.3),
+                audio_8d_quality: getElementValue('audio-8d-quality') || 'balanced',
+                audio_8d_itd: getElementChecked('audio-8d-itd'),
+                audio_8d_proximity: getElementChecked('audio-8d-proximity'),
+                audio_8d_crossfeed: getElementChecked('audio-8d-crossfeed'),
+                audio_8d_micro_movements: getElementChecked('audio-8d-micro-movements'),
+                audio_8d_speech_aware: getElementChecked('audio-8d-speech-aware'),
                 pitch_shift_enabled: getElementChecked('pitch-shift-enabled'),
                 pitch_shift_semitones: getIntValue('pitch-shift-semitones', 0),
                 asmr_enabled: getElementChecked('asmr-enabled'),
-                asmr_intimacy: getIntValue('asmr-intimacy', 70),
                 asmr_tingles: getIntValue('asmr-tingles', 60),
                 asmr_breathiness: getIntValue('asmr-breathiness', 65),
-                asmr_crispness: getIntValue('asmr-crispness', 55),
-                asmr_warmth: getIntValue('asmr-warmth', 60),
-                asmr_depth: getIntValue('asmr-depth', 40),
-                asmr_binaural: getElementChecked('asmr-binaural')
+                asmr_crispness: getIntValue('asmr-crispness', 55)
             };
         }
         
@@ -1454,14 +1436,55 @@
                     // Direct degree value (20-360)
                     depthDisplay.textContent = Math.round(parseFloat(depthSlider.value));
                 }
-                // Show/hide speed for static mode
+                // Show/hide speed for static/center modes (no movement = no speed needed)
                 if (speedGroup && modeSelect) {
-                    speedGroup.style.display = modeSelect.value === 'static' ? 'none' : 'block';
+                    const isStaticMode = ['static', 'static_right', 'center'].includes(modeSelect.value);
+                    speedGroup.style.display = isStaticMode ? 'none' : 'block';
                 }
             }
             speedSlider?.addEventListener('input', updateDisplays);
             depthSlider?.addEventListener('input', updateDisplays);
             modeSelect?.addEventListener('change', updateDisplays);
+            
+            // Distance slider - controls proximity effect (bass + presence boost)
+            const distanceSlider = document.getElementById('audio-8d-distance');
+            const distanceDisplay = document.getElementById('distance-display');
+            const startDistanceInput = document.getElementById('audio-8d-start-distance');
+            const endDistanceInput = document.getElementById('audio-8d-end-distance');
+            
+            function updateDistanceDisplay() {
+                if (distanceSlider && distanceDisplay) {
+                    const val = parseFloat(distanceSlider.value).toFixed(2);
+                    distanceDisplay.textContent = val;
+                    // Sync to hidden inputs
+                    if (startDistanceInput) startDistanceInput.value = val;
+                    if (endDistanceInput) endDistanceInput.value = val;
+                }
+            }
+            distanceSlider?.addEventListener('input', updateDistanceDisplay);
+            
+            // Quality preset changes feature defaults
+            const qualitySelect = document.getElementById('audio-8d-quality');
+            const itdCheckbox = document.getElementById('audio-8d-itd');
+            const proximityCheckbox = document.getElementById('audio-8d-proximity');
+            const crossfeedCheckbox = document.getElementById('audio-8d-crossfeed');
+            const microMovesCheckbox = document.getElementById('audio-8d-micro-movements');
+            
+            function updateQualityPreset() {
+                const preset = qualitySelect?.value || 'balanced';
+                // Preset defaults (user can still override)
+                const presets = {
+                    'fast': { itd: true, proximity: false, crossfeed: false, micro: false },
+                    'balanced': { itd: true, proximity: true, crossfeed: true, micro: true },
+                    'ultra': { itd: true, proximity: true, crossfeed: true, micro: true }
+                };
+                const p = presets[preset] || presets['balanced'];
+                if (itdCheckbox) itdCheckbox.checked = p.itd;
+                if (proximityCheckbox) proximityCheckbox.checked = p.proximity;
+                if (crossfeedCheckbox) crossfeedCheckbox.checked = p.crossfeed;
+                if (microMovesCheckbox) microMovesCheckbox.checked = p.micro;
+            }
+            qualitySelect?.addEventListener('change', updateQualityPreset);
             
             // Convert spatial angle (degrees around head) to position on circle
             // Spatial angle: -90° = left, 0° = front, +90° = right, ±180° = back
@@ -2655,6 +2678,13 @@
                 // Collect all post-processing parameters using unified collection function
                 const postParams = collectPostProcessParams();
                 
+                // Check file size and warn for large files
+                const fileSizeMB = file.size / (1024 * 1024);
+                if (fileSizeMB > 50) {
+                    statusEl.textContent = `Processing large file (${fileSizeMB.toFixed(0)}MB) - this may take several minutes...`;
+                    showToast(`Large file (${fileSizeMB.toFixed(0)}MB) - please be patient`, 'info');
+                }
+                
                 progressFill.style.width = '30%';
                 progressFill.textContent = '30%';
                 
@@ -2662,9 +2692,16 @@
                 formData.append('audio_file', file);
                 formData.append('post_params', JSON.stringify(postParams));
                 
-                // Use AbortController for timeout (120 seconds max)
+                // Dynamic timeout based on file size (minimum 2 min, scales with size)
+                // ~1 minute per 20MB + 2 min base, maximum 60 minutes
+                const timeoutMinutes = Math.max(2, Math.min(60, 2 + Math.ceil(fileSizeMB / 20)));
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 120000);
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMinutes * 60 * 1000);
+                
+                if (fileSizeMB > 50) {
+                    console.log(`[Post-Process] Timeout: ${timeoutMinutes} minutes for ${fileSizeMB.toFixed(0)}MB file`);
+                    statusEl.textContent = `Processing ${fileSizeMB.toFixed(0)}MB file (timeout: ${timeoutMinutes} min)...`;
+                }
                 
                 const response = await fetch('/api/post-process/audio', {
                     method: 'POST',
@@ -3017,6 +3054,17 @@
             setTimeout(() => {
                 toast.classList.remove('show');
             }, 4000);
+        }
+        
+        // Toggle Spatial Audio Advanced Panel
+        function toggleSpatialAdvanced() {
+            const panel = document.getElementById('spatial-advanced-panel');
+            const arrow = document.getElementById('spatial-advanced-arrow');
+            if (panel && arrow) {
+                const isHidden = panel.style.display === 'none';
+                panel.style.display = isHidden ? 'block' : 'none';
+                arrow.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
+            }
         }
 
         // Worker Settings
@@ -4133,7 +4181,7 @@
                     
                     // Group workflows by source
                     const localWorkflows = data.workflows.filter(wf => wf.source === 'local');
-                    const comfyuiWorkflows = data.workflows.filter(wf => wf.source === 'comfyui' || wf.source === 'comfyui_fs');
+                    const comfyuiWorkflows = data.workflows.filter(wf => wf.source === 'comfyui' || wf.source === 'comfyui_fs' || wf.source === 'comfyui_userdata');
                     const userTemplateWorkflows = data.workflows.filter(wf => wf.source === 'user_template');
                     const templateWorkflows = data.workflows.filter(wf => wf.source === 'template');
                     
