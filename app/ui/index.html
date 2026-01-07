@@ -680,7 +680,7 @@
             <div class="scrollable">
                 <div class="card-section">
                     <div class="section-header">Speech-to-Text Transcription</div>
-                    <p style="color: var(--text-muted); margin-bottom: 20px;">Transcribe audio files using Faster Whisper. Supports WAV, MP3, FLAC, and other common formats.</p>
+                    <p style="color: var(--text-muted); margin-bottom: 20px;">Transcribe audio using <strong>Whisper</strong> (OpenAI) or <strong>GLM-ASR</strong> (Z.ai). GLM-ASR excels at quiet/whispered speech and dialects like Cantonese. Supports WAV, MP3, FLAC, and other common formats.</p>
                     
                     <div class="form-group">
                         <label class="label-with-help">
@@ -787,7 +787,7 @@
                             
                             <div class="input-hint">
                                 🎤 Speak into your microphone - text appears in real-time!<br>
-                                <small>Uses Whisper model. Processes audio in ~3 second chunks.</small>
+                                <small>Uses selected ASR model. Processes audio in ~3 second chunks.</small>
                             </div>
                         </div>
                         
@@ -810,21 +810,27 @@
                     
                     <div class="form-group" style="margin-top: 8px;">
                         <label for="transcribe-model" class="label-with-help">
-                            Whisper Model
-                            <span class="help-icon" title="Larger models are more accurate but slower. Large V3 Turbo offers the best balance.">?</span>
+                            ASR Model
+                            <span class="help-icon" title="Choose between Whisper (OpenAI) or GLM-ASR (Z.ai). GLM-ASR excels at low-volume/whisper speech and dialects.">?</span>
                         </label>
-                        <select id="transcribe-model" aria-label="Model">
-                            <option value="whisper-large-v3-turbo">Large V3 Turbo (~1.5GB, best speed/quality)</option>
-                            <option value="whisper-large-v3">Large V3 (~3GB, highest quality)</option>
-                            <option value="whisper-medium">Medium (~1.5GB)</option>
-                            <option value="whisper-small">Small (~0.5GB, fast)</option>
+                        <select id="transcribe-model" aria-label="Model" onchange="updateModelHints()">
+                            <optgroup label="🧠 GLM-ASR (Z.ai)">
+                                <option value="glm-asr-nano">GLM-ASR Nano (~3GB, best for quiet speech & dialects)</option>
+                            </optgroup>
+                            <optgroup label="🎙️ Whisper (OpenAI)">
+                                <option value="whisper-large-v3-turbo" selected>Whisper Large V3 Turbo (~1.5GB, best speed/quality)</option>
+                                <option value="whisper-large-v3">Whisper Large V3 (~3GB, highest quality)</option>
+                                <option value="whisper-medium">Whisper Medium (~1.5GB)</option>
+                                <option value="whisper-small">Whisper Small (~0.5GB, fast)</option>
+                            </optgroup>
                         </select>
+                        <div class="input-hint" id="model-hint">Whisper: Best general-purpose ASR. GLM-ASR: Excels at whispered/quiet speech and Cantonese dialect.</div>
                     </div>
                     
                     <div class="form-group" style="margin-top: 8px;" id="transcribe-language-group">
                         <label for="transcribe-language" class="label-with-help">
                             Language
-                            <span class="help-icon" title="Audio language. Use Auto-detect if unsure - Whisper handles 90+ languages.">?</span>
+                            <span class="help-icon" title="Audio language. Auto-detect works with Whisper. GLM-ASR excels at Chinese (including Cantonese) and English.">?</span>
                         </label>
                         <select id="transcribe-language" aria-label="Language">
                             <option value="auto">Auto-detect (Whisper only)</option>
@@ -837,7 +843,8 @@
                             <option value="nl">Dutch</option>
                             <option value="pl">Polish</option>
                             <option value="ru">Russian</option>
-                            <option value="zh">Chinese</option>
+                            <option value="zh">Chinese (Mandarin)</option>
+                            <option value="yue">Cantonese (粤语) - GLM-ASR recommended</option>
                             <option value="ja">Japanese</option>
                             <option value="ko">Korean</option>
                             <option value="ar">Arabic</option>
@@ -857,7 +864,7 @@
                             <option value="hu">Hungarian</option>
                             <option value="ro">Romanian</option>
                         </select>
-                        <div class="input-hint" id="language-hint">Whisper supports 90+ languages including auto-detection.</div>
+                        <div class="input-hint" id="language-hint">Whisper: 90+ languages with auto-detect. GLM-ASR: Optimized for English, Mandarin, and Cantonese.</div>
                     </div>
                     
                     <div class="form-group" style="margin-top: 8px;">
@@ -3137,6 +3144,33 @@
             }
         });
 
+        // Update hints based on selected ASR model
+        function updateModelHints() {
+            const model = document.getElementById('transcribe-model').value;
+            const modelHint = document.getElementById('model-hint');
+            const languageHint = document.getElementById('language-hint');
+            const autoOption = document.querySelector('#transcribe-language option[value="auto"]');
+            
+            const isGLM = model.startsWith('glm');
+            
+            if (isGLM) {
+                modelHint.textContent = '🧠 GLM-ASR: Best for quiet/whispered speech, low-volume audio, and Cantonese dialect. Outperforms Whisper V3 on key benchmarks.';
+                languageHint.textContent = 'GLM-ASR is optimized for English, Mandarin Chinese, and Cantonese (粤语).';
+                // Disable auto-detect for GLM-ASR
+                autoOption.disabled = true;
+                autoOption.textContent = 'Auto-detect (Whisper only)';
+                // If auto was selected, switch to English
+                if (document.getElementById('transcribe-language').value === 'auto') {
+                    document.getElementById('transcribe-language').value = 'en';
+                }
+            } else {
+                modelHint.textContent = '🎙️ Whisper: Best general-purpose ASR with excellent multilingual support and auto-detection.';
+                languageHint.textContent = 'Whisper supports 90+ languages including auto-detection.';
+                autoOption.disabled = false;
+                autoOption.textContent = 'Auto-detect';
+            }
+        }
+
         // Save transcribe tab preferences to localStorage
         function saveTranscribePreferences() {
             const prefs = {
@@ -3167,21 +3201,11 @@
                     if (prefs.postprocessAudio !== undefined) document.getElementById('postprocess-audio').checked = prefs.postprocessAudio;
                     if (prefs.skipExistingVocals !== undefined) document.getElementById('skip-existing-vocals').checked = prefs.skipExistingVocals;
                 }
-                // Update language visibility based on loaded model
-                updateLanguageVisibility();
+                // Update hints based on loaded model (handles both Whisper and GLM-ASR)
+                updateModelHints();
             } catch (e) {
                 console.warn('Failed to load transcribe preferences:', e);
             }
-        }
-        
-        // Update language selector visibility based on model
-        function updateLanguageVisibility() {
-            // Whisper supports multiple languages and auto-detection
-            const languageHint = document.getElementById('language-hint');
-            const languageSelect = document.getElementById('transcribe-language');
-            
-            languageHint.textContent = 'Whisper supports 90+ languages including auto-detection.';
-            languageSelect.querySelector('option[value="auto"]').disabled = false;
         }
         
         // Load preferences on page load
@@ -3323,12 +3347,17 @@
                 source.connect(liveScriptProcessor);
                 liveScriptProcessor.connect(liveAudioContext.destination);
                 
-                // Connect to WebSocket on ASR server directly
+                // Connect to WebSocket on appropriate ASR server
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 
-                // ASR server runs on port 8889
-                const asrHost = window.location.hostname + ':8889';
+                // Select ASR server port based on model:
+                // - GLM-ASR runs on port 8890
+                // - Whisper runs on port 8889
+                const isGLM = model.startsWith('glm');
+                const asrPort = isGLM ? '8890' : '8889';
+                const asrHost = window.location.hostname + ':' + asrPort;
                 let wsUrl = `${wsProtocol}//${asrHost}/v1/audio/transcriptions/live?model=${encodeURIComponent(model)}&language=${encodeURIComponent(language)}`;
+                console.log(`[LIVE] Connecting to ${isGLM ? 'GLM-ASR' : 'Whisper'} server at ${asrHost}`);
                 
                 console.log('[LIVE] Connecting to:', wsUrl);
                 document.getElementById('live-status-text').textContent = 'Connecting...';

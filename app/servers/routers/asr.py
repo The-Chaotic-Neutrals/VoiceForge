@@ -22,8 +22,12 @@ from .common import verify_auth
 from util.clients import (
     get_whisperasr_client,
     is_whisperasr_available,
+    get_glmasr_client,
+    is_glmasr_available,
     transcribe_audio,
     get_shared_session,
+    WHISPERASR_SERVER_URL,
+    GLMASR_SERVER_URL,
 )
 
 
@@ -35,16 +39,52 @@ ASR_DEFAULT_LANGUAGE = os.getenv("ASR_DEFAULT_LANGUAGE", "en")
 
 
 @router.get("/v1/asr/health")
-async def asr_health_check():
-    """Check ASR server health."""
-    asr_url = os.getenv("WHISPERASR_SERVER_URL", os.getenv("ASR_SERVER_URL", "http://127.0.0.1:8889"))
-    try:
-        resp = get_shared_session().get(f"{asr_url}/health", timeout=5)
-        if resp.status_code == 200:
-            return resp.json()
-        return {"status": "error", "detail": resp.text}
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
+async def asr_health_check(backend: str = None):
+    """Check ASR server health.
+    
+    Args:
+        backend: Optional backend to check ("whisper" or "glm"). 
+                 If not specified, checks both and returns combined status.
+    """
+    result = {
+        "status": "healthy",
+        "backends": {}
+    }
+    
+    # Check Whisper ASR
+    if backend is None or backend == "whisper":
+        try:
+            resp = get_shared_session().get(f"{WHISPERASR_SERVER_URL}/health", timeout=5)
+            if resp.status_code == 200:
+                result["backends"]["whisper"] = resp.json()
+                result["backends"]["whisper"]["url"] = WHISPERASR_SERVER_URL
+            else:
+                result["backends"]["whisper"] = {"status": "error", "detail": resp.text}
+        except Exception as e:
+            result["backends"]["whisper"] = {"status": "unavailable", "detail": str(e)}
+    
+    # Check GLM-ASR
+    if backend is None or backend == "glm":
+        try:
+            resp = get_shared_session().get(f"{GLMASR_SERVER_URL}/health", timeout=5)
+            if resp.status_code == 200:
+                result["backends"]["glm"] = resp.json()
+                result["backends"]["glm"]["url"] = GLMASR_SERVER_URL
+            else:
+                result["backends"]["glm"] = {"status": "error", "detail": resp.text}
+        except Exception as e:
+            result["backends"]["glm"] = {"status": "unavailable", "detail": str(e)}
+    
+    # Set overall status
+    whisper_ok = result["backends"].get("whisper", {}).get("status") == "healthy"
+    glm_ok = result["backends"].get("glm", {}).get("status") == "healthy"
+    
+    if not whisper_ok and not glm_ok:
+        result["status"] = "unhealthy"
+    elif not whisper_ok or not glm_ok:
+        result["status"] = "partial"
+    
+    return result
 
 
 @router.post("/api/transcribe")
@@ -64,13 +104,25 @@ async def transcribe_audio_endpoint(
     Args:
         audio: Audio file to transcribe
         clean_vocals: Whether to clean vocals first with UVR5
-        language: Language code (e.g., 'en', 'es')
+        model: ASR model to use. Use "glm-asr-nano" for GLM-ASR, 
+               or "whisper-large-v3-turbo" etc. for Whisper
+        language: Language code (e.g., 'en', 'es', 'zh')
     """
-    if not is_whisperasr_available():
-        raise HTTPException(
-            status_code=503,
-            detail="Whisper ASR server is not available. Start it with option [4] in the launcher."
-        )
+    effective_model = model or ASR_MODEL_NAME
+    
+    # Check appropriate server availability based on model
+    if effective_model.lower().startswith("glm"):
+        if not is_glmasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="GLM-ASR server is not available. Run launch_glmasr_server.bat to start it."
+            )
+    else:
+        if not is_whisperasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Whisper ASR server is not available. Start it with option [4] in the launcher."
+            )
     
     # Save uploaded file
     file_ext = os.path.splitext(audio.filename)[1] if audio.filename else ".wav"
@@ -82,11 +134,11 @@ async def transcribe_audio_endpoint(
         with open(tmp_path, "wb") as f:
             f.write(content)
         
-        # Transcribe
+        # Transcribe (routes to appropriate backend automatically)
         result = transcribe_audio(
             tmp_path,
             language=language or ASR_DEFAULT_LANGUAGE,
-            model=model or ASR_MODEL_NAME
+            model=effective_model
         )
         
         return result
@@ -114,13 +166,27 @@ async def create_transcription(
     """
     OpenAI-compatible transcription endpoint.
     
-    Creates a transcription from audio using Whisper.
+    Creates a transcription from audio using Whisper or GLM-ASR.
+    
+    Supported models:
+    - "glm-asr-nano": GLM-ASR-Nano-2512 (1.5B params, excellent for dialects & low-volume speech)
+    - "whisper-large-v3-turbo": Whisper large-v3-turbo (default)
+    - "whisper-large-v3": Whisper large-v3
+    - "whisper-medium", "whisper-small", "whisper-base", "whisper-tiny": Other Whisper sizes
     """
-    if not is_whisperasr_available():
-        raise HTTPException(
-            status_code=503,
-            detail="Whisper ASR server is not available"
-        )
+    # Check appropriate server availability based on model
+    if model.lower().startswith("glm"):
+        if not is_glmasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="GLM-ASR server is not available. Run launch_glmasr_server.bat to start it."
+            )
+    else:
+        if not is_whisperasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Whisper ASR server is not available"
+            )
     
     # Save uploaded file
     file_ext = os.path.splitext(file.filename)[1] if file.filename else ".wav"
@@ -205,17 +271,29 @@ def _format_vtt_time(seconds: float) -> str:
 async def transcribe_onnx(
     audio: UploadFile = File(...),
     language: str = Form(default="en"),
+    model: str = Form(default=None),
     _: bool = Depends(verify_auth)
 ):
     """
     Transcribe audio using ONNX Whisper (if available).
-    Falls back to standard Whisper ASR if ONNX not available.
+    Falls back to standard ASR if ONNX not available.
+    
+    Also supports GLM-ASR via model="glm-asr-nano".
     """
-    if not is_whisperasr_available():
-        raise HTTPException(
-            status_code=503,
-            detail="Whisper ASR server is not available"
-        )
+    effective_model = model or ASR_MODEL_NAME
+    
+    if effective_model.lower().startswith("glm"):
+        if not is_glmasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="GLM-ASR server is not available"
+            )
+    else:
+        if not is_whisperasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Whisper ASR server is not available"
+            )
     
     file_ext = os.path.splitext(audio.filename)[1] if audio.filename else ".wav"
     fd, tmp_path = tempfile.mkstemp(suffix=file_ext)
@@ -226,7 +304,7 @@ async def transcribe_onnx(
         with open(tmp_path, "wb") as f:
             f.write(content)
         
-        result = transcribe_audio(tmp_path, language=language)
+        result = transcribe_audio(tmp_path, language=language, model=effective_model)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -241,17 +319,29 @@ async def transcribe_onnx(
 async def transcribe_stream(
     audio: UploadFile = File(...),
     language: str = Form(default="en"),
+    model: str = Form(default=None),
     _: bool = Depends(verify_auth)
 ):
     """
     Transcribe audio with streaming response.
     Returns results as they become available.
+    
+    Supports both Whisper and GLM-ASR backends.
     """
-    if not is_whisperasr_available():
-        raise HTTPException(
-            status_code=503,
-            detail="Whisper ASR server is not available"
-        )
+    effective_model = model or ASR_MODEL_NAME
+    
+    if effective_model.lower().startswith("glm"):
+        if not is_glmasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="GLM-ASR server is not available"
+            )
+    else:
+        if not is_whisperasr_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Whisper ASR server is not available"
+            )
     
     file_ext = os.path.splitext(audio.filename)[1] if audio.filename else ".wav"
     fd, tmp_path = tempfile.mkstemp(suffix=file_ext)
@@ -264,7 +354,7 @@ async def transcribe_stream(
         
         # For now, just return normal transcription
         # Streaming would require websocket or SSE
-        result = transcribe_audio(tmp_path, language=language)
+        result = transcribe_audio(tmp_path, language=language, model=effective_model)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

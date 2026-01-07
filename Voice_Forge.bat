@@ -7,6 +7,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 :: ===============================
 set "CONDA_ENV_NAME=voiceforge"
 set "WHISPER_ENV_NAME=whisper_asr"
+set "GLMASR_ENV_NAME=glm_asr"
 set "RVC_ENV_NAME=rvc"
 set "AUDIO_SERVICES_ENV_NAME=audio_services"
 set "CHATTERBOX_ENV_NAME=chatterbox"
@@ -14,6 +15,7 @@ set "REQ_FILE=%~dp0app\install\requirements_main.txt"
 set "CUSTOM_DEPS=%~dp0app\assets\custom_dependencies"
 set "PYTHONFAULTHANDLER=1"
 set "ASR_SERVER_PORT=8889"
+set "GLMASR_SERVER_PORT=8890"
 set "RVC_SERVER_PORT=8891"
 set "AUDIO_SERVICES_SERVER_PORT=8892"
 set "CHATTERBOX_SERVER_PORT=8893"
@@ -148,6 +150,63 @@ if %ASR_ENV_FOUND% equ 0 (
     echo [DEBUG] This is normal if you haven't installed ASR support yet
     echo [INFO] Run Utilities ^> Install All to enable Whisper ASR
     echo [DEBUG] Continuing without Whisper ASR server...
+)
+
+:CHECK_GLMASR
+:: Check and launch GLM-ASR server (alternative ASR with better quiet speech recognition)
+echo [DEBUG] Checking for GLM-ASR environment: %GLMASR_ENV_NAME%
+
+:: Use same CONDA_CMD as set above (or set it again)
+if not defined CONDA_CMD (
+    set "CONDA_CMD=%CONDA_EXE%"
+    if exist "%CONDA_BASE%\Scripts\conda.bat" (
+        set "CONDA_CMD=%CONDA_BASE%\Scripts\conda.bat"
+    )
+)
+
+:: Try to run conda env list, but fall back to directory check if it fails
+echo [DEBUG] Checking for GLM-ASR environment using conda command...
+"%CONDA_CMD%" env list 2>&1 | findstr /C:"%GLMASR_ENV_NAME%" >nul 2>&1
+set "GLMASR_ENV_FOUND=%ERRORLEVEL%"
+
+:: If conda command failed, try checking directory directly
+if %GLMASR_ENV_FOUND% neq 0 (
+    echo [DEBUG] Conda command failed or env not in list, checking directory...
+    if exist "%CONDA_BASE%\envs\%GLMASR_ENV_NAME%" (
+        echo [DEBUG] GLM-ASR environment directory found: %CONDA_BASE%\envs\%GLMASR_ENV_NAME%
+        set "GLMASR_ENV_FOUND=0"
+    ) else (
+        echo [DEBUG] GLM-ASR environment directory not found
+    )
+)
+
+if %GLMASR_ENV_FOUND% equ 0 (
+    echo [DEBUG] GLM-ASR environment found in conda list
+    if exist "%~dp0app\servers\glmasr_server.py" (
+        echo [INFO] GLM-ASR environment found, starting GLM-ASR server in background...
+        
+        :: Check if launcher batch file exists
+        if not exist "%~dp0app\launch\launch_glmasr_server.bat" (
+            echo [ERROR] GLM-ASR launcher batch file not found: %~dp0app\launch\launch_glmasr_server.bat
+            echo [ERROR] Skipping GLM-ASR server launch
+            goto CHECK_AUDIO_SERVICES
+        )
+        
+        echo [DEBUG] Launching GLM-ASR server using launch_glmasr_server.bat...
+        start "VoiceForge GLM-ASR Server" cmd /k "%~dp0app\launch\launch_glmasr_server.bat"
+        if errorlevel 1 (
+            echo [ERROR] Failed to start GLM-ASR server process
+        ) else (
+            echo [INFO] GLM-ASR server starting in background window...
+            timeout /t 2 /nobreak >nul
+        )
+    ) else (
+        echo [WARN] GLM-ASR server script not found at: %~dp0app\servers\glmasr_server.py
+        echo [WARN] Skipping GLM-ASR server
+    )
+) else (
+    echo [INFO] GLM-ASR environment not found - skipping GLM-ASR server (optional)
+    echo [INFO] GLM-ASR is optional. Install via Utilities ^> Install All if you want better quiet speech recognition
 )
 
 :CHECK_AUDIO_SERVICES
@@ -347,7 +406,16 @@ if not errorlevel 1 (
     echo [SKIP] %WHISPER_ENV_NAME% not installed
 )
 
-:: Update Postprocess env if exists
+:: Update GLM-ASR env if exists
+"%CONDA_EXE%" env list | findstr /C:"%GLMASR_ENV_NAME%" >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Updating %GLMASR_ENV_NAME%...
+    call "%~dp0app\install\install_glmasr.bat"
+    if errorlevel 1 echo [WARN] GLM-ASR environment update had issues
+) else (
+    echo [SKIP] %GLMASR_ENV_NAME% not installed
+)
+
 :: Update Audio Services env if exists
 "%CONDA_EXE%" env list | findstr /C:"%AUDIO_SERVICES_ENV_NAME%" >nul 2>&1
 if not errorlevel 1 (
@@ -389,7 +457,7 @@ goto UTILITIES_MENU
 :INSTALL_ALL_ENVS
 echo.
 echo [INFO] Installing all environments...
-echo [INFO] This will setup: %CONDA_ENV_NAME%, %WHISPER_ENV_NAME%, %RVC_ENV_NAME%, %AUDIO_SERVICES_ENV_NAME%, %CHATTERBOX_ENV_NAME%
+echo [INFO] This will setup: %CONDA_ENV_NAME%, %WHISPER_ENV_NAME%, %GLMASR_ENV_NAME%, %RVC_ENV_NAME%, %AUDIO_SERVICES_ENV_NAME%, %CHATTERBOX_ENV_NAME%
 echo.
 pause
 
@@ -413,6 +481,12 @@ if errorlevel 1 (
     echo [ERROR] Whisper environment setup failed.
     pause
     goto UTILITIES_MENU
+)
+
+:: Install GLM-ASR env (alternative ASR with better quiet speech recognition)
+call "%~dp0app\install\install_glmasr.bat"
+if errorlevel 1 (
+    echo [WARN] GLM-ASR environment setup had issues (optional component).
 )
 
 :: Install RVC env
@@ -448,6 +522,7 @@ echo.
 echo   Environments to be deleted:
 echo     - %CONDA_ENV_NAME%
 echo     - %WHISPER_ENV_NAME%
+echo     - %GLMASR_ENV_NAME%
 echo     - %AUDIO_SERVICES_ENV_NAME%
 echo     - %RVC_ENV_NAME%
 echo     - %CHATTERBOX_ENV_NAME%
@@ -473,6 +548,13 @@ if not errorlevel 1 (
 if not errorlevel 1 (
     echo [INFO] Removing %WHISPER_ENV_NAME%...
     "%CONDA_EXE%" env remove -n "%WHISPER_ENV_NAME%" -y
+)
+
+:: Delete GLM-ASR env
+"%CONDA_EXE%" env list | findstr /C:"%GLMASR_ENV_NAME%" >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Removing %GLMASR_ENV_NAME%...
+    "%CONDA_EXE%" env remove -n "%GLMASR_ENV_NAME%" -y
 )
 
 :: Delete Audio Services env
@@ -527,6 +609,7 @@ set "PYTHONPATH=%CUSTOM_DEPS%;%PYTHONPATH%"
 
 :: Set server URLs for main app
 set "ASR_SERVER_URL=http://127.0.0.1:%ASR_SERVER_PORT%"
+set "GLMASR_SERVER_URL=http://127.0.0.1:%GLMASR_SERVER_PORT%"
 set "RVC_SERVER_URL=http://127.0.0.1:%RVC_SERVER_PORT%"
 set "CHATTERBOX_SERVER_URL=http://127.0.0.1:%CHATTERBOX_SERVER_PORT%"
 
@@ -568,7 +651,8 @@ if not exist "app\util\main.py" (
 echo [DEBUG] Found main.py in: %CD%\app\util
 
 echo [INFO] Launching VoiceForge...
-echo [INFO] ASR Server URL: %ASR_SERVER_URL%
+echo [INFO] ASR Server URL: %ASR_SERVER_URL% (Whisper)
+echo [INFO] GLM-ASR Server URL: %GLMASR_SERVER_URL%
 echo [INFO] RVC Server URL: %RVC_SERVER_URL%
 echo [INFO] Chatterbox Server URL: %CHATTERBOX_SERVER_URL%
 echo [DEBUG] Python path: 
@@ -624,14 +708,16 @@ set "PYTHONPATH=%CUSTOM_DEPS%;%PYTHONPATH%"
 
 :: Set server URLs
 set "ASR_SERVER_URL=http://127.0.0.1:%ASR_SERVER_PORT%"
+set "GLMASR_SERVER_URL=http://127.0.0.1:%GLMASR_SERVER_PORT%"
 set "RVC_SERVER_URL=http://127.0.0.1:%RVC_SERVER_PORT%"
 set "CHATTERBOX_SERVER_URL=http://127.0.0.1:%CHATTERBOX_SERVER_PORT%"
 
-:: Launch ASR, RVC, and Chatterbox servers in background
+:: Launch ASR, GLM-ASR, RVC, and Chatterbox servers in background
 call :LAUNCH_SERVICES
 
 echo [INFO] Launching API server on port 8888...
-echo [INFO] ASR Server URL: %ASR_SERVER_URL%
+echo [INFO] ASR Server URL: %ASR_SERVER_URL% (Whisper)
+echo [INFO] GLM-ASR Server URL: %GLMASR_SERVER_URL%
 echo [INFO] RVC Server URL: %RVC_SERVER_URL%
 echo [INFO] Chatterbox Server URL: %CHATTERBOX_SERVER_URL%
 python -X faulthandler -u "app\servers\main_server.py" --port 8888

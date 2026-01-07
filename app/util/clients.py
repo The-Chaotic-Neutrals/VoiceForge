@@ -101,6 +101,8 @@ def reset_shared_session():
 
 # Whisper ASR
 WHISPERASR_SERVER_URL = os.getenv("WHISPERASR_SERVER_URL", os.getenv("ASR_SERVER_URL", "http://127.0.0.1:8889"))
+# GLM-ASR (alternative ASR backend)
+GLMASR_SERVER_URL = os.getenv("GLMASR_SERVER_URL", "http://127.0.0.1:8890")
 RVC_SERVER_URL = os.getenv("RVC_SERVER_URL", "http://127.0.0.1:8891")
 CHATTERBOX_SERVER_URL = os.getenv("CHATTERBOX_SERVER_URL", "http://127.0.0.1:8893")
 #
@@ -432,6 +434,216 @@ class WhisperASRClient(BaseServiceClient):
             return {"loaded": False, "error": str(e)}
 
 
+# ============================================
+# GLM-ASR CLIENT
+# ============================================
+
+class GLMASRClient(BaseServiceClient):
+    """Client for the GLM-ASR microservice (glmasr_server).
+    
+    GLM-ASR-Nano-2512 is a 1.5B parameter ASR model that:
+    - Outperforms Whisper V3 on multiple benchmarks
+    - Has excellent dialect support (Mandarin, Cantonese, English)
+    - Excels at low-volume/whisper speech recognition
+    """
+    
+    def __init__(self, server_url: str = None):
+        super().__init__(server_url or GLMASR_SERVER_URL)
+    
+    def is_available(self) -> bool:
+        """Check if GLM-ASR server is available."""
+        status = self.get_status()
+        # GLM-ASR reports as whisper_available for compatibility
+        return status.get("whisper_available", False) or status.get("glm_asr_available", False)
+    
+    def get_status(self) -> dict:
+        """Get GLM-ASR server status."""
+        status = super().get_status()
+        # Add default values for ASR-specific fields if not present
+        if "glm_asr_available" not in status:
+            status["glm_asr_available"] = False
+        if "glm_model_loaded" not in status:
+            status["glm_model_loaded"] = False
+        return status
+    
+    def transcribe(
+        self,
+        audio_path: str,
+        language: str = "en",
+        response_format: Literal["json", "text", "verbose_json"] = "json",
+        clean_vocals: bool = False,
+        skip_existing_vocals: bool = True,
+        postprocess_audio: bool = False,
+        device: str = "gpu",
+        model: str = None
+    ) -> dict:
+        """
+        Transcribe audio file using GLM-ASR.
+        
+        Args:
+            audio_path: Path to audio file
+            language: Language code (default: "en")
+            response_format: Response format (json, text, verbose_json)
+            clean_vocals: If True, use UVR5 to remove background music/noise before transcription
+            skip_existing_vocals: If True, reuse cached vocals if available
+            postprocess_audio: If True, apply audio enhancement before transcription
+            device: "gpu" or "cpu"
+            model: ASR model name (ignored for GLM-ASR, only one model available)
+        
+        Returns:
+            Transcription result dict with "text" key
+        
+        Raises:
+            RuntimeError: If transcription fails
+        """
+        try:
+            data = {
+                "language": language,
+                "response_format": response_format,
+                "clean_vocals": str(clean_vocals).lower(),
+                "skip_existing_vocals": str(skip_existing_vocals).lower(),
+                "postprocess_audio": str(postprocess_audio).lower(),
+                "device": device
+            }
+            if model:
+                data["model"] = model
+            
+            response = self._post_with_file(
+                endpoint="/v1/audio/transcriptions",
+                file_path=audio_path,
+                file_key="file",
+                data=data,
+                timeout=300  # Longer timeout for long audio
+            )
+            
+            # Handle specific error codes
+            if response.status_code == 507:
+                # GPU OOM error - include helpful message
+                try:
+                    detail = response.json().get("detail", response.text)
+                except:
+                    detail = response.text
+                raise RuntimeError(f"GPU out of memory: {detail}")
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"GLM-ASR server error: {response.status_code} - {response.text}")
+            
+            if response_format == "text":
+                return {"text": response.text}
+            return response.json()
+        
+        except requests.exceptions.ConnectionError:
+            raise self._handle_connection_error(
+                "GLM-ASR",
+                "Please start the GLM-ASR server using the launch_glmasr_server.bat script."
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"GLM-ASR transcription failed: {e}")
+    
+    def transcribe_stream(
+        self,
+        audio_path: str,
+        language: str = "en",
+        clean_vocals: bool = False
+    ):
+        """
+        Streaming transcription - yields updates as Server-Sent Events.
+        
+        Args:
+            audio_path: Path to audio file
+            language: Language code (default: "en")
+            clean_vocals: If True, use UVR5 to remove background music/noise
+        
+        Yields:
+            dict: Event updates with type, message, progress, text etc.
+        """
+        try:
+            with open(audio_path, 'rb') as f:
+                files = {'file': (os.path.basename(audio_path), f)}
+                data = {
+                    'language': language,
+                    'clean_vocals': str(clean_vocals).lower()
+                }
+                
+                response = self.session.post(
+                    f"{self.server_url}/v1/audio/transcriptions/stream",
+                    files=files,
+                    data=data,
+                    stream=True,
+                    timeout=300
+                )
+                
+                if response.status_code != 200:
+                    raise RuntimeError(f"GLM-ASR server error: {response.status_code}")
+                
+                # Parse SSE stream
+                for line in response.iter_lines():
+                    if line:
+                        line = line.decode('utf-8')
+                        if line.startswith('data: '):
+                            try:
+                                event_data = json.loads(line[6:])
+                                yield event_data
+                            except json.JSONDecodeError:
+                                continue
+        
+        except requests.exceptions.ConnectionError:
+            raise self._handle_connection_error(
+                "GLM-ASR",
+                "Please start the GLM-ASR server using the launch_glmasr_server.bat script."
+            )
+        except Exception as e:
+            raise RuntimeError(f"GLM-ASR streaming transcription failed: {e}")
+    
+    def get_gpu_memory(self) -> dict:
+        """Get GPU memory usage from GLM-ASR server."""
+        try:
+            response = self.session.get(f"{self.server_url}/gpu_memory", timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            return {"available": False, "error": response.text}
+        except requests.exceptions.ConnectionError:
+            return {"available": False, "error": "GLM-ASR server not running"}
+        except Exception as e:
+            return {"available": False, "error": str(e)}
+    
+    def clear_gpu_cache(self) -> dict:
+        """Clear GPU memory cache on GLM-ASR server."""
+        try:
+            response = self.session.post(f"{self.server_url}/clear_cache", timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "error": "GLM-ASR server not running"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def unload(self) -> dict:
+        """Unload the GLM-ASR model to free GPU memory."""
+        try:
+            response = self.session.post(f"{self.server_url}/unload", timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            return {"success": False, "error": response.text}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "error": "GLM-ASR server not running"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def get_model_info(self) -> dict:
+        """Get information about the loaded GLM-ASR model."""
+        try:
+            response = self.session.get(f"{self.server_url}/model_info", timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            return {"loaded": False, "error": response.text}
+        except requests.exceptions.ConnectionError:
+            return {"loaded": False, "error": "GLM-ASR server not running"}
+        except Exception as e:
+            return {"loaded": False, "error": str(e)}
 
 
 # ============================================
@@ -1461,13 +1673,14 @@ class ChatterboxClient(BaseServiceClient):
 
 # Global client instances (lazy initialized)
 _asr_client = None
+_glmasr_client = None
 _rvc_client = None
 _chatterbox_client = None
 
 
-# ASR helpers
+# ASR helpers (Whisper - default)
 def get_asr_client() -> WhisperASRClient:
-    """Get or create the global ASR client."""
+    """Get or create the global ASR client (Whisper)."""
     global _asr_client
     if _asr_client is None:
         _asr_client = WhisperASRClient()
@@ -1475,7 +1688,7 @@ def get_asr_client() -> WhisperASRClient:
 
 
 def is_asr_available() -> bool:
-    """Check if ASR is available."""
+    """Check if ASR (Whisper) is available."""
     return get_asr_client().is_available()
 
 
@@ -1488,6 +1701,20 @@ def is_whisperasr_available() -> bool:
     return is_asr_available()
 
 
+# GLM-ASR helpers
+def get_glmasr_client() -> GLMASRClient:
+    """Get or create the global GLM-ASR client."""
+    global _glmasr_client
+    if _glmasr_client is None:
+        _glmasr_client = GLMASRClient()
+    return _glmasr_client
+
+
+def is_glmasr_available() -> bool:
+    """Check if GLM-ASR server is available."""
+    return get_glmasr_client().is_available()
+
+
 def transcribe_audio(
     audio_path: str,
     language: str = "en",
@@ -1498,8 +1725,39 @@ def transcribe_audio(
     device: str = "gpu",
     model: str = None
 ) -> dict:
-    """Transcribe audio using the ASR server."""
-    return get_asr_client().transcribe(audio_path, language, response_format, clean_vocals, skip_existing_vocals, postprocess_audio, device, model)
+    """Transcribe audio using the appropriate ASR server.
+    
+    Automatically routes to GLM-ASR or Whisper based on model name:
+    - Models starting with 'glm' use GLM-ASR server
+    - All other models use Whisper server
+    
+    Args:
+        audio_path: Path to audio file
+        language: Language code (default: "en")
+        response_format: Response format (json, text, verbose_json)
+        clean_vocals: If True, use UVR5 to remove background before transcription
+        skip_existing_vocals: If True, reuse cached vocals if available
+        postprocess_audio: If True, apply audio enhancement before transcription
+        device: "gpu" or "cpu"
+        model: ASR model name. Use "glm-asr-nano" for GLM-ASR, 
+               "whisper-large-v3-turbo" etc. for Whisper
+    
+    Returns:
+        Transcription result dict with "text" key
+    """
+    # Route to appropriate backend based on model name
+    if model and model.lower().startswith("glm"):
+        return get_glmasr_client().transcribe(
+            audio_path, language, response_format, 
+            clean_vocals, skip_existing_vocals, postprocess_audio, 
+            device, model
+        )
+    else:
+        return get_asr_client().transcribe(
+            audio_path, language, response_format, 
+            clean_vocals, skip_existing_vocals, postprocess_audio, 
+            device, model
+        )
 
 
 # RVC helpers
@@ -2022,14 +2280,18 @@ __all__ = [
     'BaseServiceClient',
     # Clients
     'WhisperASRClient',
+    'GLMASRClient',
     'RVCClient', 
     'ChatterboxClient',
     'PostProcessClient',
     'PreprocessClient',
-    # ASR helpers
+    # ASR helpers (Whisper)
     'get_whisperasr_client',
     'is_whisperasr_available',
     'transcribe_audio',
+    # GLM-ASR helpers
+    'get_glmasr_client',
+    'is_glmasr_available',
     # RVC helpers
     'get_rvc_client',
     'is_rvc_server_available',
@@ -2054,6 +2316,7 @@ __all__ = [
     # Server URLs
     'get_shared_session',
     'WHISPERASR_SERVER_URL',
+    'GLMASR_SERVER_URL',
     'RVC_SERVER_URL',
     'CHATTERBOX_SERVER_URL',
     'AUDIO_SERVICES_SERVER_URL',
