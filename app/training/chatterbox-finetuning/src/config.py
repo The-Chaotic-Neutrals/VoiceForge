@@ -33,9 +33,9 @@ class TrainConfig:
 
     # --- Hyperparameters ---
     batch_size: int = 4
-    grad_accum: int = 2
+    grad_accum: int = 8
     learning_rate: float = 5e-05
-    num_epochs: int = 20
+    num_epochs: int = 150
     
     save_steps: int = 500
     save_total_limit: int = 2
