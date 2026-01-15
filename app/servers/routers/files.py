@@ -227,8 +227,9 @@ async def get_background_audio(_: bool = Depends(verify_auth)):
         for dir_path, _, filenames in os.walk(SOUNDS_DIR):
             for f in filenames:
                 if f.lower().endswith(audio_extensions):
-                    rel_path = os.path.relpath(os.path.join(dir_path, f), ASSETS_DIR)
-                    files.append(rel_path.replace("\\", "/"))
+                    # Return absolute paths so resolve_audio_path can find them
+                    abs_path = os.path.abspath(os.path.join(dir_path, f))
+                    files.append(abs_path.replace("\\", "/"))
     
     return {"files": files}
 

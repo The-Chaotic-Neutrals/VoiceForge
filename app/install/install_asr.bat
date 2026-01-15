@@ -3,21 +3,20 @@ cd /d "%~dp0..\.."
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ===============================
-:: GLM-ASR Environment Installer
+:: Unified ASR Environment Installer
+:: Supports: Whisper + GLM-ASR
 :: ===============================
 
-set "GLMASR_ENV_NAME=glm_asr"
-set "REQ_FILE=%~dp0requirements_glmasr.txt"
+set "ASR_ENV_NAME=asr"
+set "REQ_FILE=%~dp0requirements_asr.txt"
 
 echo.
 echo =============================================
-echo   GLM-ASR Environment Installer
+echo   Unified ASR Environment Installer
 echo =============================================
-echo   Model: zai-org/GLM-ASR-Nano-2512
-echo   - 1.5B parameters
-echo   - Outperforms Whisper V3 on benchmarks
-echo   - Excellent for low-volume/whisper speech
-echo   - Great dialect support (Cantonese, etc.)
+echo   Backends:
+echo   - Whisper (Faster Whisper / CTranslate2)
+echo   - GLM-ASR (zai-org/GLM-ASR-Nano-2512)
 echo =============================================
 echo.
 
@@ -35,12 +34,12 @@ set "INSTALL_RESULT=%ERRORLEVEL%"
 
 if %INSTALL_RESULT% equ 0 (
     echo.
-    echo [INFO] GLM-ASR environment setup complete!
-    echo [INFO] Environment name: %GLMASR_ENV_NAME%
+    echo [INFO] ASR environment setup complete!
+    echo [INFO] Environment name: %ASR_ENV_NAME%
     echo.
 ) else (
     echo.
-    echo [ERROR] GLM-ASR environment setup failed!
+    echo [ERROR] ASR environment setup failed!
     echo.
 )
 
@@ -53,7 +52,7 @@ exit /b %INSTALL_RESULT%
 :: ===============================
 :DO_INSTALL
 echo.
-echo [INFO] Setting up GLM-ASR environment...
+echo [INFO] Setting up unified ASR environment...
 
 if not exist "%REQ_FILE%" (
     echo [ERROR] Missing requirements file: "%REQ_FILE%"
@@ -61,17 +60,17 @@ if not exist "%REQ_FILE%" (
 )
 
 :: Create environment if needed
-"%CONDA_EXE%" env list | findstr /C:"%GLMASR_ENV_NAME%" >nul 2>&1
+"%CONDA_EXE%" env list | findstr /C:"%ASR_ENV_NAME%" >nul 2>&1
 if errorlevel 1 (
-    echo [INFO] Creating conda environment "%GLMASR_ENV_NAME%" with Python 3.11...
-    "%CONDA_EXE%" create -n "%GLMASR_ENV_NAME%" python=3.11 -y
+    echo [INFO] Creating conda environment "%ASR_ENV_NAME%" with Python 3.11...
+    "%CONDA_EXE%" create -n "%ASR_ENV_NAME%" python=3.11 -y
     if errorlevel 1 (
         echo [ERROR] Failed to create conda environment.
         exit /b 1
     )
 )
 
-call :ACTIVATE_ENV "%GLMASR_ENV_NAME%"
+call :ACTIVATE_ENV "%ASR_ENV_NAME%"
 if errorlevel 1 exit /b 1
 
 :: Install PyTorch with CUDA FIRST
@@ -98,22 +97,30 @@ python -c "import torch; print(f'Torch: {torch.__version__}'); print(f'CUDA: {to
 
 python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo [WARN] CUDA not available - GLM-ASR will run on CPU (slower)
+    echo [WARN] CUDA not available - ASR will run on CPU (slower)
+)
+
+:: Verify Whisper installation
+echo [INFO] Verifying Faster Whisper installation...
+python -c "from faster_whisper import WhisperModel; print('Faster Whisper OK')" 2>nul
+if errorlevel 1 (
+    echo [WARN] Faster Whisper may not be properly installed.
 )
 
 :: Verify transformers installation
-echo [INFO] Verifying transformers installation...
+echo [INFO] Verifying transformers installation (for GLM-ASR)...
 python -c "from transformers import AutoProcessor, AutoModelForSeq2SeqLM; print('Transformers OK')" 2>nul
 if errorlevel 1 (
     echo [WARN] Transformers may not be properly installed. GLM-ASR requires transformers from source.
 )
 
 echo.
-echo [INFO] GLM-ASR environment setup complete!
-echo [INFO] Environment name: %GLMASR_ENV_NAME%
+echo [INFO] ASR environment setup complete!
+echo [INFO] Environment name: %ASR_ENV_NAME%
 echo.
-echo [NOTE] The GLM-ASR model (~3GB) will be downloaded on first use.
-echo        Model will be cached in: app\models\glm_asr
+echo [NOTE] Models will be downloaded on first use:
+echo        - Whisper models cached in: app\models\whisper
+echo        - GLM-ASR model (~3GB) cached in: app\models\glm_asr
 exit /b 0
 
 :: ===============================
@@ -162,4 +169,3 @@ if errorlevel 1 (
     exit /b 1
 )
 exit /b 0
-

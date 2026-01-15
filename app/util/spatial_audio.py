@@ -215,13 +215,20 @@ def create_speech_aware_pan(
     # Detect speech breaks and get energy curve
     breaks, energy = detect_speech_breaks(audio, sample_rate)
     
+    # Log diagnostic info
+    duration_sec = n_samples / sample_rate
+    print(f"[SPATIAL-SPEECH] Audio: {duration_sec:.2f}s @ {sample_rate}Hz, {len(breaks)} breaks detected")
+    
     # Calculate energy threshold for "speaking" vs "pause"
-    energy_threshold = np.percentile(energy, 70)  # Above this = definitely speaking
+    # Use 85th percentile - more permissive to avoid blocking too many transitions
+    energy_threshold = np.percentile(energy, 85)  # Above this = definitely speaking
+    energy_median = np.percentile(energy, 50)
+    print(f"[SPATIAL-SPEECH] Energy: median={energy_median:.4f}, threshold={energy_threshold:.4f}")
     
     # If very few breaks detected, fall back to time-based
-    duration_sec = n_samples / sample_rate
     expected_transitions = duration_sec * speed_hz * 2  # 2 transitions per cycle
     if len(breaks) < max(2, int(expected_transitions * 0.3)):  # Need at least 30% coverage
+        print(f"[SPATIAL-SPEECH] Only {len(breaks)} breaks found (need {max(2, int(expected_transitions * 0.3))}), using time-based panning")
         return None  # Signal to use default
     
     # Calculate the "ideal" time-based pan curve first
@@ -354,7 +361,30 @@ def create_speech_aware_pan(
     total_transitions = len(sign_changes)
     print(f"[SPATIAL-SPEECH] {transitions_snapped}/{total_transitions} transitions snapped to breaks, {transitions_blocked} blocked during speech")
     
-    return np.clip(adjusted_pan, -1.0, 1.0)
+    # IMPORTANT: If too many transitions were blocked, the panning will be stuck/broken
+    # Fall back to time-based panning which always works smoothly
+    if total_transitions > 0 and transitions_blocked > total_transitions * 0.5:
+        print(f"[SPATIAL-SPEECH] WARNING: {transitions_blocked}/{total_transitions} transitions blocked - falling back to time-based panning")
+        return None  # Signal to use default time-based panning
+    
+    # Sanity check: make sure pan actually varies AND isn't heavily biased
+    adjusted_pan = np.clip(adjusted_pan, -1.0, 1.0)
+    pan_range = adjusted_pan.max() - adjusted_pan.min()
+    pan_mean = adjusted_pan.mean()
+    print(f"[SPATIAL-SPEECH] Pan output: range={pan_range:.3f}, mean={pan_mean:.3f}, min={adjusted_pan.min():.3f}, max={adjusted_pan.max():.3f}")
+    
+    # If pan is stuck (very small range), fall back to time-based
+    if pan_range < 0.3:
+        print(f"[SPATIAL-SPEECH] WARNING: Pan range too small ({pan_range:.3f}) - falling back to time-based panning")
+        return None
+    
+    # If pan is heavily biased to one side (mean far from 0), fall back to time-based
+    # This catches cases where panning varies but stays mostly on one side
+    if abs(pan_mean) > 0.4:
+        print(f"[SPATIAL-SPEECH] WARNING: Pan heavily biased (mean={pan_mean:.3f}) - falling back to time-based panning")
+        return None
+    
+    return adjusted_pan
 
 
 # =============================================================================

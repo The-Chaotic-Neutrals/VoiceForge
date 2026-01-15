@@ -1,6 +1,9 @@
 @echo off
 cd /d "%~dp0..\.."
 
+:: Unified ASR Server Launcher
+:: Supports: Whisper + GLM-ASR
+
 :: Find conda base directory
 set "CONDA_BASE="
 for %%D in (
@@ -22,13 +25,14 @@ if not defined CONDA_BASE (
     exit /b 1
 )
 
-call "%CONDA_BASE%\Scripts\activate.bat" "whisper_asr"
+call "%CONDA_BASE%\Scripts\activate.bat" "asr"
 if errorlevel 1 (
-    echo [ERROR] Failed to activate Whisper ASR environment
+    echo [ERROR] Failed to activate ASR environment. Run install_asr.bat first.
     pause
     exit /b 1
 )
-python -X faulthandler -u "app\servers\whisperasr_server.py" --port 8889
+echo Starting unified ASR server (Whisper + GLM-ASR)...
+python -X faulthandler -u "app\servers\asr_server.py" --port 8889
 if errorlevel 1 (
     echo [ERROR] ASR server crashed!
     pause

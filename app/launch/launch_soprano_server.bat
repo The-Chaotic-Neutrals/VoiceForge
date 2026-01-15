@@ -22,17 +22,20 @@ if not defined CONDA_BASE (
     exit /b 1
 )
 
-call "%CONDA_BASE%\Scripts\activate.bat" "glm_asr"
+call "%CONDA_BASE%\Scripts\activate.bat" "soprano"
 if errorlevel 1 (
-    echo [ERROR] Failed to activate GLM-ASR environment
-    echo [INFO] Run install_glmasr.bat first to create the environment
+    echo [ERROR] Failed to activate Soprano environment
+    echo [INFO] Run Voice_Forge.bat ^> Utilities ^> Install All to setup the environment
     pause
     exit /b 1
 )
-python -X faulthandler -u "app\servers\glmasr_server.py" --port 8890
+
+echo [INFO] Starting Soprano server...
+echo.
+
+python -X faulthandler -u app\servers\soprano_server.py --port 8894
 if errorlevel 1 (
-    echo [ERROR] GLM-ASR server crashed!
+    echo [ERROR] Soprano server crashed!
     pause
 )
 pause
-

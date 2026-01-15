@@ -44,7 +44,10 @@ class RVCParams:
 
 @dataclass
 class PostProcessParams:
-    """Post-processing audio effects parameters. All effects OFF by default."""
+    """Post-processing audio effects parameters. All effects OFF by default.
+    
+    NOTE: This must match exactly what the VoiceForge UI exposes.
+    """
     # EQ (0 = disabled/passthrough)
     highpass: float = 0.0  # 0 = no highpass filter
     lowpass: float = 0.0   # 0 = no lowpass filter  
@@ -52,46 +55,32 @@ class PostProcessParams:
     bass_gain: float = 0.0   # 0 = no bass boost/cut
     treble_freq: float = 8000.0  # frequency target (only applies if treble_gain != 0)
     treble_gain: float = 0.0  # 0 = no treble boost/cut
-    # Reverb (all 0 = disabled)
-    reverb_in_gain: float = 0.0
-    reverb_out_gain: float = 0.0
+    # Reverb (0 = disabled)
     reverb_delay: float = 0.0
     reverb_decay: float = 0.0
     # Effects (0 = disabled)
     crystalizer: float = 0.0
     deesser: float = 0.0
-    stereo_width: float = 1.0  # 1.0 = no change (mono preservation)
-    # Air/presence (0 gain = disabled)
-    air_freq: float = 10000.0  # frequency target (only applies if air_gain != 0)
-    air_gain: float = 0.0  # 0 = no air enhancement
-    air_width: float = 1.0
-    # Mastering
-    master_enabled: bool = False
-    master_target_lufs: float = -14.0
-    master_true_peak: float = -1.0
-    # 8D Audio
+    # Spatial Audio (8D)
     audio_8d_enabled: bool = False
-    audio_8d_mode: str = "rotate"  # "static", "sweep", "rotate"
-    audio_8d_speed: float = 0.1
-    audio_8d_depth: float = 0.8
-    audio_8d_start_angle: float = 270.0  # 0=front, 90=right, 180=back, 270=left
-    audio_8d_end_angle: float = 90.0
-    audio_8d_start_distance: float = 1.0  # 0=close, 1=far (affects volume/reverb)
-    audio_8d_end_distance: float = 1.0
-    audio_8d_loop: bool = True
-    audio_8d_reverb: bool = False  # Off by default
+    audio_8d_mode: str = "rotate"  # "center", "extreme", "sweep", "rotate", "static", "static_right"
+    audio_8d_speed: float = 0.1  # Hz
+    audio_8d_depth: float = 180.0  # Arc in degrees (180 = L↔R, 360 = full circle)
+    audio_8d_distance: float = 0.3  # 0 = in ear, 1 = far (controls proximity effect)
+    audio_8d_quality: str = "balanced"  # "fast", "balanced", "ultra"
+    audio_8d_itd: bool = True  # Interaural Time Difference
+    audio_8d_proximity: bool = True  # Bass boost when close
+    audio_8d_crossfeed: bool = True  # Natural bleed between ears
+    audio_8d_micro_movements: bool = True  # Subtle organic variation
+    audio_8d_speech_aware: bool = True  # Transitions at speech pauses
     # Pitch Shift
     pitch_shift_enabled: bool = False
     pitch_shift_semitones: int = 0
     # ASMR Enhancement
     asmr_enabled: bool = False
-    asmr_intimacy: int = 70  # 0-100: how close/compressed the voice feels
     asmr_tingles: int = 60  # 0-100: 2-8kHz "tingle zone" enhancement
     asmr_breathiness: int = 65  # 0-100: high freq air/breath sounds
     asmr_crispness: int = 55  # 0-100: mouth sounds, consonants, crisp detail
-    asmr_warmth: int = 60  # 0-100: low freq enveloping warmth
-    asmr_depth: int = 40  # 0-100: intimate room reflections
-    asmr_binaural: bool = True  # stereo widening + ear delay
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for post-process server."""
@@ -102,39 +91,27 @@ class PostProcessParams:
             "bass_gain": self.bass_gain,
             "treble_freq": self.treble_freq,
             "treble_gain": self.treble_gain,
-            "reverb_in_gain": self.reverb_in_gain,
-            "reverb_out_gain": self.reverb_out_gain,
             "reverb_delay": self.reverb_delay,
             "reverb_decay": self.reverb_decay,
             "crystalizer": self.crystalizer,
             "deesser": self.deesser,
-            "stereo_width": self.stereo_width,
-            "air_freq": self.air_freq,
-            "air_gain": self.air_gain,
-            "air_width": self.air_width,
-            "master_enabled": self.master_enabled,
-            "master_target_lufs": self.master_target_lufs,
-            "master_true_peak": self.master_true_peak,
             "audio_8d_enabled": self.audio_8d_enabled,
             "audio_8d_mode": self.audio_8d_mode,
             "audio_8d_speed": self.audio_8d_speed,
             "audio_8d_depth": self.audio_8d_depth,
-            "audio_8d_start_angle": self.audio_8d_start_angle,
-            "audio_8d_end_angle": self.audio_8d_end_angle,
-            "audio_8d_start_distance": self.audio_8d_start_distance,
-            "audio_8d_end_distance": self.audio_8d_end_distance,
-            "audio_8d_loop": self.audio_8d_loop,
-            "audio_8d_reverb": self.audio_8d_reverb,
+            "audio_8d_distance": self.audio_8d_distance,
+            "audio_8d_quality": self.audio_8d_quality,
+            "audio_8d_itd": self.audio_8d_itd,
+            "audio_8d_proximity": self.audio_8d_proximity,
+            "audio_8d_crossfeed": self.audio_8d_crossfeed,
+            "audio_8d_micro_movements": self.audio_8d_micro_movements,
+            "audio_8d_speech_aware": self.audio_8d_speech_aware,
             "pitch_shift_enabled": self.pitch_shift_enabled,
             "pitch_shift_semitones": self.pitch_shift_semitones,
             "asmr_enabled": self.asmr_enabled,
-            "asmr_intimacy": self.asmr_intimacy,
             "asmr_tingles": self.asmr_tingles,
             "asmr_breathiness": self.asmr_breathiness,
             "asmr_crispness": self.asmr_crispness,
-            "asmr_warmth": self.asmr_warmth,
-            "asmr_depth": self.asmr_depth,
-            "asmr_binaural": self.asmr_binaural,
         }
     
     @classmethod
@@ -148,39 +125,27 @@ class PostProcessParams:
             bass_gain=d.get("bass_gain", defaults.bass_gain),
             treble_freq=d.get("treble_freq", defaults.treble_freq),
             treble_gain=d.get("treble_gain", defaults.treble_gain),
-            reverb_in_gain=d.get("reverb_in_gain", defaults.reverb_in_gain),
-            reverb_out_gain=d.get("reverb_out_gain", defaults.reverb_out_gain),
             reverb_delay=d.get("reverb_delay", defaults.reverb_delay),
             reverb_decay=d.get("reverb_decay", defaults.reverb_decay),
             crystalizer=d.get("crystalizer", defaults.crystalizer),
             deesser=d.get("deesser", defaults.deesser),
-            stereo_width=d.get("stereo_width", defaults.stereo_width),
-            air_freq=d.get("air_freq", defaults.air_freq),
-            air_gain=d.get("air_gain", defaults.air_gain),
-            air_width=d.get("air_width", defaults.air_width),
-            master_enabled=d.get("master_enabled", defaults.master_enabled),
-            master_target_lufs=d.get("master_target_lufs", defaults.master_target_lufs),
-            master_true_peak=d.get("master_true_peak", defaults.master_true_peak),
             audio_8d_enabled=d.get("audio_8d_enabled", defaults.audio_8d_enabled),
             audio_8d_mode=d.get("audio_8d_mode", defaults.audio_8d_mode),
             audio_8d_speed=d.get("audio_8d_speed", defaults.audio_8d_speed),
             audio_8d_depth=d.get("audio_8d_depth", defaults.audio_8d_depth),
-            audio_8d_start_angle=d.get("audio_8d_start_angle", defaults.audio_8d_start_angle),
-            audio_8d_end_angle=d.get("audio_8d_end_angle", defaults.audio_8d_end_angle),
-            audio_8d_start_distance=d.get("audio_8d_start_distance", defaults.audio_8d_start_distance),
-            audio_8d_end_distance=d.get("audio_8d_end_distance", defaults.audio_8d_end_distance),
-            audio_8d_loop=d.get("audio_8d_loop", defaults.audio_8d_loop),
-            audio_8d_reverb=d.get("audio_8d_reverb", defaults.audio_8d_reverb),
+            audio_8d_distance=d.get("audio_8d_distance", defaults.audio_8d_distance),
+            audio_8d_quality=d.get("audio_8d_quality", defaults.audio_8d_quality),
+            audio_8d_itd=d.get("audio_8d_itd", defaults.audio_8d_itd),
+            audio_8d_proximity=d.get("audio_8d_proximity", defaults.audio_8d_proximity),
+            audio_8d_crossfeed=d.get("audio_8d_crossfeed", defaults.audio_8d_crossfeed),
+            audio_8d_micro_movements=d.get("audio_8d_micro_movements", defaults.audio_8d_micro_movements),
+            audio_8d_speech_aware=d.get("audio_8d_speech_aware", defaults.audio_8d_speech_aware),
             pitch_shift_enabled=d.get("pitch_shift_enabled", defaults.pitch_shift_enabled),
             pitch_shift_semitones=d.get("pitch_shift_semitones", defaults.pitch_shift_semitones),
             asmr_enabled=d.get("asmr_enabled", defaults.asmr_enabled),
-            asmr_intimacy=d.get("asmr_intimacy", defaults.asmr_intimacy),
             asmr_tingles=d.get("asmr_tingles", defaults.asmr_tingles),
             asmr_breathiness=d.get("asmr_breathiness", defaults.asmr_breathiness),
             asmr_crispness=d.get("asmr_crispness", defaults.asmr_crispness),
-            asmr_warmth=d.get("asmr_warmth", defaults.asmr_warmth),
-            asmr_depth=d.get("asmr_depth", defaults.asmr_depth),
-            asmr_binaural=d.get("asmr_binaural", defaults.asmr_binaural),
         )
     
     def needs_processing(self) -> bool:
@@ -189,8 +154,6 @@ class PostProcessParams:
         Returns False if all settings are at their "passthrough" values.
         """
         # Check major effect toggles first (fast path)
-        if self.master_enabled:
-            return True
         if self.audio_8d_enabled:
             return True
         if self.pitch_shift_enabled and self.pitch_shift_semitones != 0:
@@ -208,18 +171,14 @@ class PostProcessParams:
         if self.treble_gain != 0:
             return True
         
-        # Check reverb (all must be >0 for reverb to apply)
-        if self.reverb_in_gain > 0 and self.reverb_out_gain > 0 and self.reverb_delay > 0 and self.reverb_decay > 0:
+        # Check reverb (both delay and decay must be > 0)
+        if self.reverb_delay > 0 and self.reverb_decay > 0:
             return True
         
         # Check enhancement effects
         if self.crystalizer > 0:
             return True
         if self.deesser > 0:
-            return True
-        if self.stereo_width != 1.0:
-            return True
-        if self.air_gain != 0:
             return True
         
         # Nothing enabled - can skip post-processing entirely

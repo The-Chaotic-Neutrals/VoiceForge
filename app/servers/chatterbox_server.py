@@ -5,9 +5,18 @@
 import os
 import sys
 import asyncio
+import glob
 
 # Add app directory to path for imports
 _APP_DIR = os.path.dirname(os.path.dirname(__file__))
+_MODEL_CACHE_DIR = os.path.join(_APP_DIR, "models", "chatterbox")
+os.makedirs(_MODEL_CACHE_DIR, exist_ok=True)
+# Use HF_HOME to keep model cache under app/models
+os.environ.setdefault("HF_HOME", _MODEL_CACHE_DIR)
+
+# Custom fine-tuned models directory
+_CUSTOM_MODELS_DIR = os.path.join(_APP_DIR, "models", "chatterbox_custom")
+os.makedirs(_CUSTOM_MODELS_DIR, exist_ok=True)
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
@@ -56,11 +65,13 @@ from typing import Optional
 from pathlib import Path
 import threading
 import io
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import torchaudio as ta
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
@@ -76,47 +87,230 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(title="Chatterbox-Turbo TTS Server", version="1.0.0")
 
+# Enable CORS for UI model switching
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Model cache
-MODEL_CACHE = {
-    "model": None,
-    "loaded": False,
-    "sample_rate": None,
-}
-_model_lock = threading.Lock()
+# Worker pool configuration - each worker has its own model instance
+# This allows true parallel TTS generation without model state corruption
+CHATTERBOX_WORKERS = int(os.getenv("CHATTERBOX_WORKERS", "1"))
+
+
+class ChatterboxWorker:
+    """Single Chatterbox worker with its own model instance."""
+    
+    def __init__(self, worker_id: int):
+        self.worker_id = worker_id
+        self.lock = threading.Lock()
+        self.model = None
+        self.loaded = False
+        self.sample_rate = None
+        self.current_model_name = None
+    
+    def load_model(self, custom_model_path: str = None, custom_model_name: str = None):
+        """Load this worker's model instance, optionally with custom checkpoint."""
+        logger.info(f"[Worker {self.worker_id}] load_model called with path={custom_model_path}, name={custom_model_name}")
+        # Check if we need to reload due to model change
+        target_model = custom_model_name or "default"
+        if self.loaded and self.model is not None and self.current_model_name == target_model:
+            logger.info(f"[Worker {self.worker_id}] Model already loaded: {target_model}")
+            return self.model
+        
+        with self.lock:
+            # Double-check after acquiring lock
+            if self.loaded and self.model is not None and self.current_model_name == target_model:
+                return self.model
+            
+            # If model is loaded but we need a different one, unload first
+            if self.model is not None and self.current_model_name != target_model:
+                logger.info(f"[Worker {self.worker_id}] Unloading current model ({self.current_model_name}) for switch to {target_model}")
+                del self.model
+                self.model = None
+                self.loaded = False
+                torch.cuda.empty_cache()
+            
+            logger.info(f"[Worker {self.worker_id}] Loading Chatterbox-Turbo model...")
+            
+            from chatterbox.tts_turbo import ChatterboxTurboTTS
+            
+            try:
+                self.model = ChatterboxTurboTTS.from_pretrained(device=DEVICE, token=False)
+            except TypeError:
+                self.model = ChatterboxTurboTTS.from_pretrained(device=DEVICE)
+            
+            # Load custom checkpoint weights if specified
+            if custom_model_path:
+                self._load_custom_checkpoint(custom_model_path, custom_model_name)
+            
+            self.loaded = True
+            self.sample_rate = self.model.sr
+            self.current_model_name = target_model
+            
+            if custom_model_path:
+                logger.info(f"[Worker {self.worker_id}] Chatterbox-Turbo loaded on {DEVICE}, sample_rate={self.model.sr}")
+                logger.info(f"[Worker {self.worker_id}] Using CUSTOM model: {target_model} from {custom_model_path}")
+            else:
+                logger.info(f"[Worker {self.worker_id}] Chatterbox-Turbo loaded on {DEVICE}, sample_rate={self.model.sr}")
+                logger.info(f"[Worker {self.worker_id}] Using DEFAULT pretrained model")
+            
+            return self.model
+    
+    def _load_custom_checkpoint(self, model_path: str, model_name: str):
+        """Load custom fine-tuned checkpoint weights onto the model."""
+        from safetensors.torch import load_file
+        
+        # Find the checkpoint file - prefer t3_turbo_finetuned.safetensors or latest checkpoint
+        checkpoint_file = None
+        
+        # Check for direct finetuned file
+        finetuned_path = os.path.join(model_path, "t3_turbo_finetuned.safetensors")
+        if os.path.exists(finetuned_path):
+            checkpoint_file = finetuned_path
+        else:
+            # Look for checkpoint directories
+            checkpoint_dirs = sorted(glob.glob(os.path.join(model_path, "checkpoint-*")), 
+                                     key=lambda x: int(x.split("-")[-1]) if x.split("-")[-1].isdigit() else 0,
+                                     reverse=True)
+            if checkpoint_dirs:
+                # Use latest checkpoint
+                latest_checkpoint = checkpoint_dirs[0]
+                safetensor_path = os.path.join(latest_checkpoint, "model.safetensors")
+                if os.path.exists(safetensor_path):
+                    checkpoint_file = safetensor_path
+        
+        if not checkpoint_file:
+            logger.warning(f"[Worker {self.worker_id}] No checkpoint file found in {model_path}, using base model")
+            return
+        
+        logger.info(f"[Worker {self.worker_id}] Loading custom checkpoint: {checkpoint_file}")
+        
+        try:
+            # Load the safetensors checkpoint
+            state_dict = load_file(checkpoint_file)
+            
+            # The fine-tuned weights are for the T3 model (text-to-speech transformer)
+            # Load them into the t3 component
+            if hasattr(self.model, 't3') and self.model.t3 is not None:
+                # Filter keys that match t3 model
+                t3_state_dict = {}
+                for key, value in state_dict.items():
+                    # Remove 'model.' prefix if present (from trainer)
+                    clean_key = key.replace('model.', '') if key.startswith('model.') else key
+                    t3_state_dict[clean_key] = value
+                
+                # Load with strict=False to allow partial loading
+                missing, unexpected = self.model.t3.load_state_dict(t3_state_dict, strict=False)
+                
+                if missing:
+                    logger.debug(f"[Worker {self.worker_id}] Missing keys (expected for partial load): {len(missing)}")
+                if unexpected:
+                    logger.debug(f"[Worker {self.worker_id}] Unexpected keys: {len(unexpected)}")
+                
+                logger.info(f"[Worker {self.worker_id}] Custom checkpoint '{model_name}' loaded successfully")
+            else:
+                logger.warning(f"[Worker {self.worker_id}] Model doesn't have t3 component, cannot load custom weights")
+        except Exception as e:
+            logger.error(f"[Worker {self.worker_id}] Failed to load custom checkpoint: {e}")
+            logger.info(f"[Worker {self.worker_id}] Falling back to base model")
+    
+    def generate(self, text: str, audio_prompt_path: str, seed: int = 0, 
+                 custom_model_path: str = None, custom_model_name: str = None):
+        """Generate audio using this worker's model instance."""
+        with self.lock:
+            model = self.load_model(custom_model_path, custom_model_name)
+            
+            if seed > 0:
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed(seed)
+            
+            with torch.inference_mode():
+                return model.generate(text, audio_prompt_path=audio_prompt_path)
+    
+    def unload(self):
+        """Unload model to free memory."""
+        with self.lock:
+            if self.model is not None:
+                del self.model
+                self.model = None
+            self.loaded = False
+            self.sample_rate = None
+
+
+class ChatterboxWorkerPool:
+    """Pool of Chatterbox workers for parallel generation."""
+    
+    def __init__(self, num_workers: int = 2):
+        self.num_workers = num_workers
+        self.workers: list = []
+        self.executor: Optional[ThreadPoolExecutor] = None
+        self._initialized = False
+        self._worker_index = 0
+        self._index_lock = threading.Lock()
+    
+    def initialize(self):
+        """Initialize the worker pool."""
+        if self._initialized:
+            return
+        
+        logger.info(f"Initializing Chatterbox worker pool with {self.num_workers} worker(s)...")
+        
+        self.workers = [ChatterboxWorker(i) for i in range(self.num_workers)]
+        self.executor = ThreadPoolExecutor(max_workers=self.num_workers, thread_name_prefix="chatterbox_worker")
+        self._initialized = True
+        
+        logger.info(f"Chatterbox worker pool ready with {self.num_workers} worker(s)")
+    
+    def get_worker(self) -> ChatterboxWorker:
+        """Get next worker in round-robin fashion."""
+        if not self._initialized:
+            self.initialize()
+        
+        with self._index_lock:
+            worker = self.workers[self._worker_index % self.num_workers]
+            self._worker_index += 1
+            return worker
+    
+    def shutdown(self):
+        """Shutdown all workers."""
+        if self.executor:
+            self.executor.shutdown(wait=True)
+            self.executor = None
+        
+        for worker in self.workers:
+            worker.unload()
+        
+        self.workers = []
+        self._initialized = False
+    
+    @property
+    def sample_rate(self):
+        """Get sample rate from first loaded worker."""
+        if self.workers:
+            for w in self.workers:
+                if w.loaded:
+                    return w.sample_rate
+        return 24000  # Default
+
+
+# Global worker pool
+WORKER_POOL = ChatterboxWorkerPool(num_workers=CHATTERBOX_WORKERS)
+logger.info(f"Chatterbox configured with {CHATTERBOX_WORKERS} workers")
 
 
 def get_model():
-    """Get or load the Chatterbox-Turbo model (lazy loading)."""
-    global MODEL_CACHE
-    
-    if MODEL_CACHE["loaded"] and MODEL_CACHE["model"] is not None:
-        return MODEL_CACHE["model"]
-    
-    with _model_lock:
-        # Double-check after acquiring lock
-        if MODEL_CACHE["loaded"] and MODEL_CACHE["model"] is not None:
-            return MODEL_CACHE["model"]
-        
-        logger.info("Loading Chatterbox-Turbo model...")
-        
-        from chatterbox.tts_turbo import ChatterboxTurboTTS
-        
-        # Try with token=False first, fall back to default
-        try:
-            model = ChatterboxTurboTTS.from_pretrained(device=DEVICE, token=False)
-        except TypeError:
-            # If token param not supported, try without it
-            model = ChatterboxTurboTTS.from_pretrained(device=DEVICE)
-        
-        MODEL_CACHE["model"] = model
-        MODEL_CACHE["loaded"] = True
-        MODEL_CACHE["sample_rate"] = model.sr
-        
-        logger.info(f"Chatterbox-Turbo loaded on {DEVICE}, sample_rate={model.sr}")
-        
-        return model
+    """Legacy function - returns a worker's model for backwards compatibility."""
+    worker = WORKER_POOL.get_worker()
+    custom_path = _current_custom_model.get("path")
+    custom_name = _current_custom_model.get("name")
+    return worker.load_model(custom_path, custom_name)
 
 
 @app.get("/health")
@@ -130,13 +324,20 @@ async def health():
             "reserved_gb": round(torch.cuda.memory_reserved() / 1e9, 2),
         }
     
+    # Count loaded workers
+    workers_loaded = sum(1 for w in WORKER_POOL.workers if w.loaded)
+    
     return {
         "status": "ok",
         "device": DEVICE,
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "model_loaded": MODEL_CACHE["loaded"],
-        "sample_rate": MODEL_CACHE["sample_rate"],
+        "workers": {
+            "configured": WORKER_POOL.num_workers,
+            "loaded": workers_loaded,
+            "initialized": WORKER_POOL._initialized
+        },
+        "sample_rate": WORKER_POOL.sample_rate,
         "vram": vram_info,
         "features": {
             "paralinguistic_tags": True,
@@ -148,13 +349,18 @@ async def health():
 
 @app.post("/warmup")
 async def warmup():
-    """Pre-load the Chatterbox model."""
+    """Pre-load all Chatterbox workers."""
     try:
-        model = get_model()
+        WORKER_POOL.initialize()
+        # Load model on all workers (with custom checkpoint if set)
+        custom_path = _current_custom_model.get("path")
+        custom_name = _current_custom_model.get("name")
+        for worker in WORKER_POOL.workers:
+            worker.load_model(custom_path, custom_name)
         return {
             "status": "ok",
-            "message": "Chatterbox-Turbo model loaded",
-            "sample_rate": model.sr,
+            "message": f"Chatterbox-Turbo loaded on {WORKER_POOL.num_workers} workers (model: {custom_name or 'default'})",
+            "sample_rate": WORKER_POOL.sample_rate,
             "device": DEVICE
         }
     except Exception as e:
@@ -164,25 +370,21 @@ async def warmup():
 
 @app.post("/unload")
 async def unload_model():
-    """Unload Chatterbox-Turbo model to free GPU memory."""
-    global MODEL_CACHE
-    
+    """Unload all Chatterbox-Turbo models to free GPU memory."""
     # Get memory before unload
     before_reserved = torch.cuda.memory_reserved() / 1e9 if torch.cuda.is_available() else 0
     
-    if not MODEL_CACHE["loaded"]:
+    workers_loaded = sum(1 for w in WORKER_POOL.workers if w.loaded)
+    if workers_loaded == 0:
         return {
             "success": True,
-            "message": "No model loaded",
+            "message": "No models loaded",
             "freed_gb": 0
         }
     
-    with _model_lock:
-        if MODEL_CACHE["model"] is not None:
-            del MODEL_CACHE["model"]
-        MODEL_CACHE["model"] = None
-        MODEL_CACHE["loaded"] = False
-        MODEL_CACHE["sample_rate"] = None
+    # Unload all workers
+    for worker in WORKER_POOL.workers:
+        worker.unload()
     
     import gc
     gc.collect()
@@ -212,20 +414,26 @@ async def get_model_info():
     if torch.cuda.is_available():
         actual_vram_gb = torch.cuda.memory_allocated() / 1e9
     
+    workers_loaded = sum(1 for w in WORKER_POOL.workers if w.loaded)
+    
     return {
         "model_id": "chatterbox-turbo",
         "model_name": "Chatterbox-Turbo",
         "model_size": "350M parameters",
-        "loaded": MODEL_CACHE["loaded"],
-        "sample_rate": MODEL_CACHE["sample_rate"],
-        "estimated_size_gb": ESTIMATED_SIZE_GB,
+        "workers": {
+            "configured": WORKER_POOL.num_workers,
+            "loaded": workers_loaded
+        },
+        "sample_rate": WORKER_POOL.sample_rate,
+        "estimated_size_gb": ESTIMATED_SIZE_GB * WORKER_POOL.num_workers,
         "actual_vram_gb": round(actual_vram_gb, 2),
         "device": DEVICE,
         "features": [
             "Zero-shot voice cloning",
             "Paralinguistic tags ([laugh], [chuckle], etc.)",
             "Low latency (optimized for voice agents)",
-            "Single-step mel decoding"
+            "Single-step mel decoding",
+            f"Parallel generation ({WORKER_POOL.num_workers} workers)"
         ]
     }
 
@@ -322,14 +530,18 @@ async def generate_tts_chunked(
             os.unlink(prompt_path)
             raise HTTPException(status_code=400, detail="No valid text to synthesize")
         
-        # Get model
-        model = get_model()
+        # Get a dedicated worker for this request
+        worker = WORKER_POOL.get_worker()
+        # Load model with custom checkpoint if set
+        custom_path = _current_custom_model.get("path")
+        custom_name = _current_custom_model.get("name")
+        worker.load_model(custom_path, custom_name)
         
         # Run generation in executor to not block the async event loop
         # This allows other requests to be received while GPU is busy
         def do_generate():
             """Blocking generation - runs in thread pool executor."""
-            # Generate each chunk - pass audio_prompt_path directly to generate() (official API)
+            # Generate each chunk using worker's generate method (handles locking)
             all_audio = []
             
             for i, chunk in enumerate(chunks):
@@ -347,27 +559,29 @@ async def generate_tts_chunked(
                 else:
                     chunk_seed = 0
                 
-                if chunk_seed > 0:
-                    torch.manual_seed(chunk_seed)
-                    if torch.cuda.is_available():
-                        torch.cuda.manual_seed(chunk_seed)
-                
-                # Generate with audio_prompt_path directly (official Chatterbox API)
-                with torch.inference_mode():
-                    wav = model.generate(chunk, audio_prompt_path=prompt_path)
+                # Generate using worker's generate method (handles locking and seeding)
+                # Pass custom model info if set
+                custom_path = _current_custom_model.get("path")
+                custom_name = _current_custom_model.get("name")
+                if i == 0:  # Log once at start
+                    if custom_path:
+                        logger.info(f"[{chunk_id}] Generating with custom model: {custom_name}")
+                    else:
+                        logger.info(f"[{chunk_id}] Generating with default model")
+                wav = worker.generate(chunk, prompt_path, chunk_seed, custom_path, custom_name)
                 
                 all_audio.append(wav)
                 
                 t_chunk_end = time.perf_counter()
-                chunk_duration = wav.shape[1] / model.sr
+                chunk_duration = wav.shape[1] / worker.sample_rate
                 chunk_time = t_chunk_end - t_chunk_start
                 logger.info(f"[{chunk_id}] Done: {chunk_duration:.1f}s audio in {chunk_time:.1f}s")
             
             return all_audio
         
-        # Run in executor so we don't block the event loop
+        # Run in worker pool executor so we don't block the event loop
         loop = asyncio.get_event_loop()
-        all_audio = await loop.run_in_executor(None, do_generate)
+        all_audio = await loop.run_in_executor(WORKER_POOL.executor, do_generate)
         logger.info(f"[{request_id}] Generation complete")
         
         # Concatenate all audio (outside the lock - we have our data)
@@ -375,7 +589,7 @@ async def generate_tts_chunked(
         
         # Save output
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-        ta.save(output_path, combined, model.sr)
+        ta.save(output_path, combined, worker.sample_rate)
         
         # Cleanup
         try:
@@ -384,7 +598,7 @@ async def generate_tts_chunked(
             pass
         
         # Log timing
-        total_duration = combined.shape[1] / model.sr
+        total_duration = combined.shape[1] / worker.sample_rate
         total_time = time.perf_counter() - t_start
         rtf = total_time / total_duration if total_duration > 0 else 0
         
@@ -469,15 +683,15 @@ async def generate_tts_stream(
     
     async def generate_stream():
         """Generator that yields SSE events with audio chunks."""
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        
         t_start = time.perf_counter()
-        model = get_model()
-        sample_rate = model.sr
         
-        # Use executor to avoid blocking the async event loop during GPU work
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts_gen")
+        # Get a dedicated worker for this request (round-robin from pool)
+        worker = WORKER_POOL.get_worker()
+        # Load model with custom checkpoint if set
+        custom_path = _current_custom_model.get("path")
+        custom_name = _current_custom_model.get("name")
+        worker.load_model(custom_path, custom_name)
+        sample_rate = worker.sample_rate
         
         try:
             # Send initial event with metadata
@@ -497,19 +711,24 @@ async def generate_tts_stream(
                 else:
                     chunk_seed = 0
                 
-                def do_generate(text, prompt, seed_val):
+                # Use worker's generate method (handles locking and seeding internally)
+                # Pass custom model info if set
+                custom_path = _current_custom_model.get("path")
+                custom_name = _current_custom_model.get("name")
+                if i == 0:  # Log once at start
+                    logger.info(f"[{request_id}] Model state: name={custom_name}, path={custom_path}")
+                    if custom_path:
+                        logger.info(f"[{request_id}] Streaming with custom model: {custom_name}")
+                    else:
+                        logger.info(f"[{request_id}] Streaming with default model")
+                def do_generate(w=worker, text=chunk, prompt=prompt_path, seed_val=chunk_seed,
+                               c_path=custom_path, c_name=custom_name):
                     """Blocking TTS generation - runs in thread pool."""
-                    if seed_val > 0:
-                        torch.manual_seed(seed_val)
-                        if torch.cuda.is_available():
-                            torch.cuda.manual_seed(seed_val)
-                    with torch.inference_mode():
-                        return model.generate(text, audio_prompt_path=prompt)
+                    return w.generate(text, prompt, seed_val, c_path, c_name)
                 
-                # Run in executor to not block event loop
-                # Parallel GPU access has contention but smaller gaps between chunks
+                # Run in worker pool's executor
                 loop = asyncio.get_event_loop()
-                wav = await loop.run_in_executor(executor, do_generate, chunk, prompt_path, chunk_seed)
+                wav = await loop.run_in_executor(WORKER_POOL.executor, do_generate)
                 
                 # Convert to WAV bytes
                 wav_buffer = io.BytesIO()
@@ -534,8 +753,7 @@ async def generate_tts_stream(
             logger.error(f"[{request_id}] Stream error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
-            # Cleanup
-            executor.shutdown(wait=False)
+            # Cleanup temp file (but NOT the shared executor)
             try:
                 os.unlink(prompt_path)
             except:
@@ -544,8 +762,116 @@ async def generate_tts_stream(
     return StreamingResponse(
         generate_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        headers={"Cache-Control": "no-cache", "Connection": "close", "X-Accel-Buffering": "no"}
     )
+
+
+# ============================================
+# Custom Model Management
+# ============================================
+
+# Track current custom model
+_current_custom_model = {"name": "default", "path": None}
+
+
+@app.get("/v1/models")
+async def list_models():
+    """List available Chatterbox models (default + custom fine-tuned)."""
+    models = [
+        {
+            "name": "default",
+            "type": "default",
+            "path": None,
+            "description": "Default Chatterbox-Turbo model from ResembleAI"
+        }
+    ]
+    
+    # Scan custom models directory
+    if os.path.exists(_CUSTOM_MODELS_DIR):
+        for name in os.listdir(_CUSTOM_MODELS_DIR):
+            model_path = os.path.join(_CUSTOM_MODELS_DIR, name)
+            if os.path.isdir(model_path):
+                # Check for fine-tuned checkpoint files
+                safetensors_files = [f for f in os.listdir(model_path) if f.endswith('.safetensors')]
+                is_turbo = any('turbo' in f.lower() for f in safetensors_files)
+                
+                models.append({
+                    "name": name,
+                    "type": "custom",
+                    "path": model_path,
+                    "is_turbo": is_turbo,
+                    "checkpoint_files": safetensors_files,
+                    "valid": len(safetensors_files) > 0
+                })
+    
+    return {
+        "models": models,
+        "current": _current_custom_model["name"]
+    }
+
+
+@app.post("/v1/models/switch")
+async def switch_model(model_name: str = "default"):
+    """
+    Switch to a different Chatterbox model.
+    
+    Note: Custom model loading requires unloading current model and 
+    loading with modified checkpoint. The implementation depends on 
+    the chatterbox-finetuning toolkit's model format.
+    """
+    global _current_custom_model
+    
+    logger.info(f"=== MODEL SWITCH REQUEST: '{model_name}' ===")
+    
+    if model_name == "default":
+        # Switch back to default - need to reload
+        if _current_custom_model["name"] != "default":
+            logger.info("Switching back to default model - unloading workers")
+            for worker in WORKER_POOL.workers:
+                worker.unload()
+        
+        _current_custom_model = {"name": "default", "path": None}
+        return {"success": True, "model": "default", "message": "Switched to default model. Workers will load default model on next generation."}
+    
+    # Check custom models
+    model_path = os.path.join(_CUSTOM_MODELS_DIR, model_name)
+    if not os.path.exists(model_path):
+        raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
+    
+    # Check for checkpoint files
+    safetensors_files = [f for f in os.listdir(model_path) if f.endswith('.safetensors')]
+    if not safetensors_files:
+        raise HTTPException(status_code=400, detail=f"No checkpoint files found in '{model_name}'")
+    
+    # Unload current model if switching to different one
+    if _current_custom_model["name"] != model_name:
+        logger.info(f"Switching to custom model '{model_name}' - unloading workers")
+        for worker in WORKER_POOL.workers:
+            worker.unload()
+    
+    _current_custom_model = {"name": model_name, "path": model_path}
+    
+    logger.info(f"Custom model set: {model_name}")
+    logger.info(f"Checkpoint files: {safetensors_files}")
+    
+    return {
+        "success": True,
+        "model": model_name,
+        "path": model_path,
+        "checkpoint_files": safetensors_files,
+        "message": f"Switched to model '{model_name}'. Note: Full custom checkpoint loading requires integration with chatterbox-finetuning."
+    }
+
+
+@app.get("/v1/models/current")
+async def current_model():
+    """Get the currently configured model."""
+    return {
+        "name": _current_custom_model["name"],
+        "path": _current_custom_model["path"],
+        "workers_loaded": WORKER_POOL._initialized,
+        "workers_count": len(WORKER_POOL.workers) if WORKER_POOL.workers else 0
+    }
 
 
 if __name__ == "__main__":

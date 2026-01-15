@@ -265,6 +265,10 @@ def convert_to_format(
     Returns:
         Audio data as bytes
     """
+    if output_format == "wav" and speed == 1.0:
+        with open(wav_path, "rb") as f:
+            return f.read()
+    
     fd, tmp = tempfile.mkstemp(suffix=f".{output_format}")
     os.close(fd)
     

@@ -3,15 +3,16 @@ cd /d "%~dp0..\.."
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ===============================
-:: Whisper ASR Environment Installer
+:: Soprano TTS Environment Installer
+:: https://huggingface.co/ekwek/Soprano-1.1-80M
 :: ===============================
 
-set "WHISPER_ENV_NAME=whisper_asr"
-set "REQ_FILE=%~dp0requirements_whisper.txt"
+set "SOPRANO_ENV_NAME=soprano"
+set "REQ_FILE=%~dp0requirements_soprano.txt"
 
 echo.
 echo =============================================
-echo   Whisper ASR Environment Installer
+echo   Soprano TTS Environment Installer
 echo =============================================
 echo.
 
@@ -29,12 +30,12 @@ set "INSTALL_RESULT=%ERRORLEVEL%"
 
 if %INSTALL_RESULT% equ 0 (
     echo.
-    echo [INFO] Whisper ASR environment setup complete!
-    echo [INFO] Environment name: %WHISPER_ENV_NAME%
+    echo [INFO] Soprano environment setup complete!
+    echo [INFO] Environment name: %SOPRANO_ENV_NAME%
     echo.
 ) else (
     echo.
-    echo [ERROR] Whisper ASR environment setup failed!
+    echo [ERROR] Soprano environment setup failed!
     echo.
 )
 
@@ -47,53 +48,51 @@ exit /b %INSTALL_RESULT%
 :: ===============================
 :DO_INSTALL
 echo.
-echo [INFO] Setting up Whisper ASR environment...
+echo [INFO] Setting up Soprano TTS environment...
 
 if not exist "%REQ_FILE%" (
     echo [ERROR] Missing requirements file: "%REQ_FILE%"
     exit /b 1
 )
 
-:: Create environment if needed
-"%CONDA_EXE%" env list | findstr /C:"%WHISPER_ENV_NAME%" >nul 2>&1
+:: Create environment if needed (Python 3.11 recommended)
+"%CONDA_EXE%" env list | findstr /C:"%SOPRANO_ENV_NAME%" >nul 2>&1
 if errorlevel 1 (
-    echo [INFO] Creating conda environment "%WHISPER_ENV_NAME%" with Python 3.11...
-    "%CONDA_EXE%" create -n "%WHISPER_ENV_NAME%" python=3.11 -y
+    echo [INFO] Creating conda environment "%SOPRANO_ENV_NAME%" with Python 3.11...
+    "%CONDA_EXE%" create -n "%SOPRANO_ENV_NAME%" python=3.11 -y
     if errorlevel 1 (
         echo [ERROR] Failed to create conda environment.
         exit /b 1
     )
 )
 
-call :ACTIVATE_ENV "%WHISPER_ENV_NAME%"
+call :ACTIVATE_ENV "%SOPRANO_ENV_NAME%"
 if errorlevel 1 exit /b 1
 
-:: Install PyTorch with CUDA FIRST
-echo [INFO] Installing PyTorch 2.6.0 with CUDA 12.4...
-python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+:: Upgrade pip
+echo [INFO] Upgrading pip...
+python -m pip install --upgrade pip >nul 2>&1
 
-:: Verify CUDA is available
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" 2>nul
-if errorlevel 1 (
-    echo [WARN] Could not verify CUDA availability
-)
-
-:: Install remaining requirements from file
+:: Install requirements
 echo [INFO] Installing requirements from %REQ_FILE%...
 python -m pip install -r "%REQ_FILE%"
 
-:: Final CUDA verification
-echo [INFO] Verifying CUDA setup...
-python -c "import torch; print(f'Torch: {torch.__version__}'); print(f'CUDA: {torch.version.cuda}'); print(f'Available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"CPU\"}')"
+:: NOTE: Windows CUDA users may need to reinstall PyTorch for CUDA support.
+:: Soprano docs recommend torch 2.8.0 with CUDA 12.8:
+:: pip uninstall -y torch
+:: pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 
-python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+:: Quick verification
+echo [INFO] Verifying Soprano installation...
+python -c "from soprano import SopranoTTS; print('Soprano OK')"
 if errorlevel 1 (
-    echo [WARN] CUDA not available - ASR will run on CPU (slower)
+    echo [ERROR] Soprano import failed!
+    exit /b 1
 )
 
 echo.
-echo [INFO] Whisper ASR environment setup complete!
-echo [INFO] Environment name: %WHISPER_ENV_NAME%
+echo [INFO] Soprano TTS environment setup complete!
+echo [INFO] Environment name: %SOPRANO_ENV_NAME%
 exit /b 0
 
 :: ===============================

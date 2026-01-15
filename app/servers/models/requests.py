@@ -27,10 +27,14 @@ class TTSRequest(BaseModel):
         default="chunked",
         description="Generation mode: 'chunked' (wait for complete) or 'streaming' (progressive)"
     )
+    tts_backend: str = Field(default="chatterbox", description="TTS backend: chatterbox or soprano")
     tts_batch_tokens: int = Field(default=100, description="Max tokens per TTS batch")
     tts_token_method: str = Field(default="tiktoken", description="Token counting method")
     chatterbox_prompt_audio: Optional[str] = Field(default=None, description="Reference audio path for voice cloning")
     chatterbox_seed: int = Field(default=0, description="Random seed (0 = random)")
+    soprano_temperature: Optional[float] = Field(default=None, description="Soprano sampling temperature (>0)")
+    soprano_top_p: Optional[float] = Field(default=None, description="Soprano nucleus sampling top_p")
+    soprano_repetition_penalty: Optional[float] = Field(default=None, description="Soprano repetition penalty")
     
     # Output format
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field(
@@ -54,40 +58,30 @@ class TTSRequest(BaseModel):
     consonant_breath_protection: float = Field(default=0.33, description="Consonant breath protection")
     
     # Post-processing parameters (all effects OFF by default - 0 = disabled)
+    # NOTE: These must match exactly what the VoiceForge UI exposes
     highpass: float = Field(default=0, description="Highpass filter frequency (0=off)")
     lowpass: float = Field(default=0, description="Lowpass filter frequency (0=off)")
     bass_freq: float = Field(default=100, description="Bass frequency")
     bass_gain: float = Field(default=0, description="Bass gain (0=off)")
     treble_freq: float = Field(default=8000, description="Treble frequency")
     treble_gain: float = Field(default=0, description="Treble gain (0=off)")
-    reverb_enabled: bool = Field(default=False, description="Enable reverb")
-    reverb_in_gain: float = Field(default=0, description="Reverb input gain (0=off)")
-    reverb_out_gain: float = Field(default=0, description="Reverb output gain (0=off)")
-    reverb_delay: float = Field(default=0, description="Reverb delay (0=off)")
+    reverb_delay: float = Field(default=0, description="Reverb delay ms (0=off)")
     reverb_decay: float = Field(default=0, description="Reverb decay (0=off)")
     crystalizer: float = Field(default=0, description="Crystalizer amount (0=off)")
     deesser: float = Field(default=0, description="De-esser amount (0=off)")
-    stereo_width: float = Field(default=1, description="Stereo width (1=no change)")
-    air_freq: float = Field(default=10000, description="Air frequency")
-    air_gain: float = Field(default=0, description="Air gain (0=off)")
-    air_width: float = Field(default=1, description="Air width")
     
-    # Mastering
-    master_enabled: bool = Field(default=False, description="Enable mastering stage")
-    master_target_lufs: float = Field(default=-14.0, description="Target loudness (LUFS)")
-    master_true_peak: float = Field(default=-1.0, description="True peak limit (dBTP)")
-    
-    # 8D Audio
-    audio_8d_enabled: bool = Field(default=False, description="Enable 8D audio effect")
-    audio_8d_mode: str = Field(default="rotate", description="8D mode: static, sweep, rotate")
-    audio_8d_speed: float = Field(default=0.1, description="8D movement speed (Hz)")
-    audio_8d_depth: float = Field(default=0.8, description="8D pan intensity (0-1)")
-    audio_8d_start_angle: float = Field(default=270.0, description="Start angle (0=front, 90=right, 180=back, 270=left)")
-    audio_8d_end_angle: float = Field(default=90.0, description="End angle for sweep mode")
-    audio_8d_start_distance: float = Field(default=1.0, description="Start distance (0=close, 1=far)")
-    audio_8d_end_distance: float = Field(default=1.0, description="End distance for sweep mode")
-    audio_8d_loop: bool = Field(default=True, description="Loop sweep movement")
-    audio_8d_reverb: bool = Field(default=False, description="Add spacious reverb for 8D")
+    # Spatial Audio (8D)
+    audio_8d_enabled: bool = Field(default=False, description="Enable spatial audio effect")
+    audio_8d_mode: str = Field(default="rotate", description="Position mode: center, extreme, sweep, rotate, static, static_right")
+    audio_8d_speed: float = Field(default=0.1, description="Movement speed (Hz)")
+    audio_8d_depth: float = Field(default=180.0, description="Arc in degrees (180=L↔R, 360=full)")
+    audio_8d_distance: float = Field(default=0.3, description="Distance (0=in ear, 1=far)")
+    audio_8d_quality: str = Field(default="balanced", description="Quality preset: fast, balanced, ultra")
+    audio_8d_itd: bool = Field(default=True, description="Interaural Time Difference")
+    audio_8d_proximity: bool = Field(default=True, description="Bass boost when close")
+    audio_8d_crossfeed: bool = Field(default=True, description="Natural bleed between ears")
+    audio_8d_micro_movements: bool = Field(default=True, description="Subtle organic variation")
+    audio_8d_speech_aware: bool = Field(default=True, description="Transitions at speech pauses")
     
     # Pitch Shift
     pitch_shift_enabled: bool = Field(default=False, description="Enable pitch shift")
@@ -95,13 +89,9 @@ class TTSRequest(BaseModel):
     
     # ASMR Enhancement
     asmr_enabled: bool = Field(default=False, description="Enable ASMR whisper enhancement")
-    asmr_intimacy: int = Field(default=70, ge=0, le=100, description="How close the voice feels (compression + warmth)")
     asmr_tingles: int = Field(default=60, ge=0, le=100, description="2-8kHz tingle zone enhancement")
     asmr_breathiness: int = Field(default=65, ge=0, le=100, description="High frequency air and breath sounds")
     asmr_crispness: int = Field(default=55, ge=0, le=100, description="Mouth sounds, consonants, crisp detail")
-    asmr_warmth: int = Field(default=60, ge=0, le=100, description="Low frequency enveloping warmth")
-    asmr_depth: int = Field(default=40, ge=0, le=100, description="Intimate room reflections")
-    asmr_binaural: bool = Field(default=True, description="Enable binaural stereo widening")
     
     # Background audio
     bg_files: List[str] = Field(default_factory=list, description="Background audio files")
@@ -115,6 +105,7 @@ class TTSRequest(BaseModel):
     main_audio_volume: float = Field(default=1.0, ge=0.0, le=2.0, description="Main audio volume for blending (legacy)")
     output_volume: float = Field(default=1.0, ge=0.0, le=3.0, description="Final output volume (applied to saved files)")
     use_config_bg_tracks: bool = Field(default=False, description="Use bg_tracks from config")
+    save_output: bool = Field(default=False, description="Save final output to server output directory")
     
     def get_rvc_params(self) -> RVCParams:
         """Extract RVC parameters as dataclass."""
@@ -136,39 +127,27 @@ class TTSRequest(BaseModel):
             bass_gain=self.bass_gain,
             treble_freq=self.treble_freq,
             treble_gain=self.treble_gain,
-            reverb_in_gain=0.0 if not self.reverb_enabled else self.reverb_in_gain,
-            reverb_out_gain=0.0 if not self.reverb_enabled else self.reverb_out_gain,
             reverb_delay=self.reverb_delay,
             reverb_decay=self.reverb_decay,
             crystalizer=self.crystalizer,
             deesser=self.deesser,
-            stereo_width=self.stereo_width,
-            air_freq=self.air_freq,
-            air_gain=self.air_gain,
-            air_width=self.air_width,
-            master_enabled=self.master_enabled,
-            master_target_lufs=self.master_target_lufs,
-            master_true_peak=self.master_true_peak,
             audio_8d_enabled=self.audio_8d_enabled,
             audio_8d_mode=self.audio_8d_mode,
             audio_8d_speed=self.audio_8d_speed,
             audio_8d_depth=self.audio_8d_depth,
-            audio_8d_start_angle=self.audio_8d_start_angle,
-            audio_8d_end_angle=self.audio_8d_end_angle,
-            audio_8d_start_distance=self.audio_8d_start_distance,
-            audio_8d_end_distance=self.audio_8d_end_distance,
-            audio_8d_loop=self.audio_8d_loop,
-            audio_8d_reverb=self.audio_8d_reverb,
+            audio_8d_distance=self.audio_8d_distance,
+            audio_8d_quality=self.audio_8d_quality,
+            audio_8d_itd=self.audio_8d_itd,
+            audio_8d_proximity=self.audio_8d_proximity,
+            audio_8d_crossfeed=self.audio_8d_crossfeed,
+            audio_8d_micro_movements=self.audio_8d_micro_movements,
+            audio_8d_speech_aware=self.audio_8d_speech_aware,
             pitch_shift_enabled=self.pitch_shift_enabled,
             pitch_shift_semitones=self.pitch_shift_semitones,
             asmr_enabled=self.asmr_enabled,
-            asmr_intimacy=self.asmr_intimacy,
             asmr_tingles=self.asmr_tingles,
             asmr_breathiness=self.asmr_breathiness,
             asmr_crispness=self.asmr_crispness,
-            asmr_warmth=self.asmr_warmth,
-            asmr_depth=self.asmr_depth,
-            asmr_binaural=self.asmr_binaural,
         )
     
     def get_background_params(self) -> BackgroundParams:

@@ -72,7 +72,15 @@ app.include_router(comfyui_router)
 async def root():
     index_path = os.path.join(APP_DIR, "ui", "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path, media_type="text/html")
+        return FileResponse(
+            index_path, 
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return {"name": "VoiceForge API", "version": "2.0.0"}
 
 
@@ -115,6 +123,54 @@ async def get_models():
                 if os.path.exists(os.path.join(path, "model.pth")):
                     models.append(item)
     return {"models": models}
+
+
+@app.get("/api/custom-models")
+async def get_custom_models():
+    """List custom trained TTS models (Soprano and Chatterbox)."""
+    import httpx
+    
+    custom_models = {
+        "soprano": [],
+        "chatterbox": []
+    }
+    
+    # Query Soprano server for custom models
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://127.0.0.1:8894/v1/models")
+            if res.status_code == 200:
+                data = res.json()
+                custom_models["soprano"] = [m for m in data.get("models", []) if m.get("type") == "custom"]
+                custom_models["soprano_current"] = data.get("current", "default")
+    except Exception as e:
+        custom_models["soprano_error"] = str(e)
+    
+    # Query Chatterbox server for custom models
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://127.0.0.1:8893/v1/models")
+            if res.status_code == 200:
+                data = res.json()
+                custom_models["chatterbox"] = [m for m in data.get("models", []) if m.get("type") == "custom"]
+                custom_models["chatterbox_current"] = data.get("current", "default")
+    except Exception as e:
+        custom_models["chatterbox_error"] = str(e)
+    
+    # Also check local directories if servers are not available
+    soprano_custom_dir = os.path.join(APP_DIR, "models", "soprano_custom")
+    if os.path.exists(soprano_custom_dir) and not custom_models["soprano"]:
+        for name in os.listdir(soprano_custom_dir):
+            if os.path.isdir(os.path.join(soprano_custom_dir, name)):
+                custom_models["soprano"].append({"name": name, "type": "custom", "path": os.path.join(soprano_custom_dir, name)})
+    
+    chatterbox_custom_dir = os.path.join(APP_DIR, "models", "chatterbox_custom")
+    if os.path.exists(chatterbox_custom_dir) and not custom_models["chatterbox"]:
+        for name in os.listdir(chatterbox_custom_dir):
+            if os.path.isdir(os.path.join(chatterbox_custom_dir, name)):
+                custom_models["chatterbox"].append({"name": name, "type": "custom", "path": os.path.join(chatterbox_custom_dir, name)})
+    
+    return custom_models
 
 
 @app.get("/api/modules")

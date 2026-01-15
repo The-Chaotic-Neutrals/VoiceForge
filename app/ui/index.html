@@ -35,16 +35,17 @@
             <button class="tab" onclick="switchTab(4)" role="tab" aria-selected="false" aria-controls="tab-4">Background Audio</button>
             <button class="tab" onclick="switchTab(5)" role="tab" aria-selected="false" aria-controls="tab-5">Transcribe</button>
             <button class="tab" onclick="switchTab(6)" role="tab" aria-selected="false" aria-controls="tab-6">ComfyUI</button>
+            <button class="tab" onclick="switchTab(7)" role="tab" aria-selected="false" aria-controls="tab-7">Training</button>
         </div>
 
         <!-- TTS Tab -->
         <div id="tab-0" class="tab-content active" role="tabpanel" aria-labelledby="tab-0">
             <div class="card-section">
-                <!-- Voice Cloning -->
-                <div class="form-group">
+                <!-- Voice Cloning (Chatterbox only) -->
+                <div class="form-group" id="chatterbox-voice-cloning-section">
                     <label class="label-with-help">
-                        Voice Cloning Audio (Required)
-                        <span class="help-icon" title="Reference audio file for voice cloning. 5+ seconds required, 10+ seconds recommended for best results.">?</span>
+                        Voice Cloning Audio (Required for Chatterbox)
+                        <span class="help-icon" title="Reference audio file for voice cloning. 5+ seconds required, 10+ seconds recommended for best results. Only needed for Chatterbox backend.">?</span>
                     </label>
                     <div class="form-row" style="gap: 8px; align-items: center;">
                         <select id="audio-prompt-select" style="flex: 1;" onchange="selectAudioPrompt(this)" aria-label="Select audio prompt">
@@ -122,6 +123,48 @@
                         </select>
                         <div class="input-hint">Streaming starts playback faster for long text</div>
                     </div>
+
+                    <div class="form-group">
+                        <label for="tts-backend" class="label-with-help">
+                            TTS Backend
+                            <span class="help-icon" title="Select which TTS engine to use. Chatterbox supports voice cloning; Soprano is lightweight and fast.">?</span>
+                        </label>
+                        <select id="tts-backend" aria-label="TTS backend" onchange="updateTTSBackendUI()">
+                            <option value="chatterbox">Chatterbox</option>
+                            <option value="soprano">Soprano</option>
+                        </select>
+                        <div class="input-hint">Chatterbox = voice cloning | Soprano = fast TTS</div>
+                    </div>
+
+                    <div class="form-group" id="chatterbox-model-section">
+                        <label for="chatterbox-model" class="label-with-help">
+                            Chatterbox Model
+                            <span class="help-icon" title="Select which Chatterbox model to use. 'Default' uses the base pretrained model. Custom models are trained via the Training tab.">?</span>
+                        </label>
+                        <div class="form-row" style="gap: 8px; align-items: center;">
+                            <select id="chatterbox-model" aria-label="Chatterbox model" style="flex: 1;">
+                                <option value="">Default (Base Model)</option>
+                            </select>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="refreshChatterboxModels()" title="Refresh model list">↻</button>
+                        </div>
+                        <div class="input-hint">Custom models trained in the Training tab will appear here</div>
+                    </div>
+
+                    <div class="form-group" id="soprano-settings" style="display: none;">
+                        <label class="label-with-help">
+                            Soprano Sampling
+                            <span class="help-icon" title="Soprano sampling settings. Higher temperature = more varied output. Lower = more consistent. Repetition penalty helps avoid loops.">?</span>
+                        </label>
+                        <div class="form-row" style="align-items: center; gap: 10px;">
+                            <label for="soprano-temperature" style="min-width: 90px;">Temperature</label>
+                            <input type="number" id="soprano-temperature" value="0.7" min="0.01" max="2" step="0.01" aria-label="Soprano temperature">
+                            <label for="soprano-top-p" style="min-width: 60px;">Top P</label>
+                            <input type="number" id="soprano-top-p" value="0.95" min="0.01" max="1" step="0.01" aria-label="Soprano top p">
+                            <label for="soprano-repetition-penalty" style="min-width: 130px;">Repetition</label>
+                            <input type="number" id="soprano-repetition-penalty" value="1.2" min="0.8" max="2" step="0.05" aria-label="Soprano repetition penalty">
+                        </div>
+                        <div class="input-hint">Soprano uses a fixed voice (no cloning). Lower temp (0.3) = consistent, higher (0.7+) = varied</div>
+                    </div>
                     
                     <div class="form-group">
                         <label for="output-volume" class="label-with-help">
@@ -131,6 +174,17 @@
                         <input type="number" id="output-volume" value="1.0" min="0" max="3" step="0.05" aria-label="Output volume">
                         <div class="input-hint">1.0 = 100%, 0.5 = 50%, 2.0 = 200%</div>
                     </div>
+
+                    <div class="form-group">
+                        <label class="label-with-help">
+                            Save Output
+                            <span class="help-icon" title="Save the final merged audio to the server output folder. Off by default to reduce disk writes.">?</span>
+                        </label>
+                        <label class="checkbox_label" style="margin-top: 4px;">
+                            <input type="checkbox" id="save-output">
+                            <small>Save merged file after generation</small>
+                        </label>
+                    </div>
                     
                     <div class="form-group">
                         <label for="chatterbox-seed" class="label-with-help">
@@ -138,7 +192,7 @@
                             <span class="help-icon" title="Random seed for reproducibility. -1 = new random each time, 0 = no seeding (PyTorch default), >0 = specific seed for reproducible output.">?</span>
                         </label>
                         <input type="number" id="chatterbox-seed" min="-1" step="1" value="-1" aria-label="Random seed">
-                        <div class="input-hint">0 = random</div>
+                        <div class="input-hint">-1 = new random, 0 = no seeding</div>
                     </div>
                     
                     <div class="form-group">
@@ -1136,6 +1190,276 @@
                 </div>
             </div>
         </div>
+
+        <!-- Training Tab -->
+        <div id="tab-7" class="tab-content" role="tabpanel" aria-labelledby="tab-7">
+            <div class="scrollable">
+                <!-- Training Backend Selection -->
+                <div class="card-section">
+                    <div class="section-header">TTS Model Training</div>
+                    <p style="color: var(--text-muted); margin-bottom: 16px;">
+                        Fine-tune TTS models with your own voice data. Create custom voices for Soprano or Chatterbox.
+                    </p>
+                    
+                    <div class="form-group">
+                        <label>Training Backend</label>
+                        <select id="training-backend" class="form-control" onchange="updateTrainingUI()">
+                            <option value="soprano">Soprano (Fast, lightweight)</option>
+                            <option value="chatterbox">Chatterbox (Voice cloning)</option>
+                        </select>
+                        <div class="input-hint" id="training-backend-hint">Soprano: 80M params, very fast. Chatterbox: Full voice cloning with audio prompts.</div>
+                    </div>
+                </div>
+                
+                <!-- Dataset Section -->
+                <div class="card-section" style="margin-top: 20px;">
+                    <div class="section-header">Dataset</div>
+                    
+                    <!-- Dataset Mode Toggle -->
+                    <div class="form-group">
+                        <label>Dataset Mode</label>
+                        <div class="form-row" style="gap: 10px;">
+                            <button class="btn btn-secondary dataset-mode-btn active" onclick="setDatasetMode('simple')" id="dataset-mode-simple">Simple (Folder)</button>
+                            <button class="btn btn-secondary dataset-mode-btn" onclick="setDatasetMode('advanced')" id="dataset-mode-advanced">Advanced (Prepare)</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Simple Mode: Folder Selection -->
+                    <div id="dataset-simple-mode">
+                        <div class="form-group">
+                            <label>Dataset Path</label>
+                            <div class="form-row" style="gap: 10px;">
+                                <input type="text" id="training-dataset-path" class="form-control" placeholder="Path to LJSpeech format dataset folder" style="flex: 1;">
+                                <button class="btn btn-secondary" onclick="browseDatasetFolder()">Browse</button>
+                                <button class="btn btn-secondary" onclick="validateDataset()">Validate</button>
+                            </div>
+                            <div class="input-hint">Expected format: folder with metadata.csv and wavs/ directory</div>
+                        </div>
+                        
+                        <!-- Dataset Validation Status -->
+                        <div id="dataset-validation-status" style="display: none; padding: 12px; border-radius: 8px; margin-top: 12px;">
+                            <div id="dataset-validation-message"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Advanced Mode: Dataset Preparation -->
+                    <div id="dataset-advanced-mode" style="display: none;">
+                        <div class="form-group">
+                            <label>Create New Dataset</label>
+                            <div class="form-row" style="gap: 10px;">
+                                <input type="text" id="new-dataset-name" class="form-control" placeholder="Dataset name" style="flex: 1;">
+                                <button class="btn btn-primary" onclick="createNewDataset()">Create</button>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Existing Datasets</label>
+                            <div class="form-row" style="gap: 10px;">
+                                <select id="training-dataset-select" class="form-control" onchange="selectDataset()" style="flex: 1;">
+                                    <option value="">-- Select dataset --</option>
+                                </select>
+                                <button class="btn btn-danger" onclick="deleteSelectedDataset()" title="Delete selected dataset">Delete</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Upload Audio -->
+                        <div class="form-group" id="dataset-upload-section" style="display: none;">
+                            <label>Upload Audio Files</label>
+                            <div class="upload-area" id="training-upload-area" ondrop="handleTrainingDrop(event)" ondragover="event.preventDefault()">
+                                <input type="file" id="training-audio-files" multiple accept="audio/*,video/*" onchange="handleTrainingUpload(event)" style="display: none;">
+                                <p>Drag & drop audio/video files or <a href="#" onclick="document.getElementById('training-audio-files').click(); return false;">browse</a></p>
+                                <p style="color: var(--text-muted); font-size: 12px;">Supported: WAV, MP3, FLAC, MP4, etc.</p>
+                            </div>
+                        </div>
+                        
+                        <!-- Uploaded Files List -->
+                        <div id="training-files-list" style="display: none; margin-top: 12px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <label style="margin: 0;">Uploaded Files <span id="training-files-count" style="color: var(--text-muted);"></span></label>
+                                <button class="btn btn-secondary" onclick="refreshDatasetFiles()" style="padding: 4px 12px; font-size: 12px;">Refresh</button>
+                            </div>
+                            <div id="training-files-container" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px;"></div>
+                            
+                            <div class="input-hint" style="margin: 12px 0 8px 0;">
+                                <strong>Workflow:</strong> Long audio? Click <em>Segment</em> first to split into 3-10s clips, then <em>Transcribe</em>. Already short clips? Just <em>Transcribe</em>.
+                            </div>
+                            <div class="form-row" style="gap: 10px;">
+                                <button class="btn btn-secondary" onclick="segmentDataset()">1. Segment Long Audio (VAD)</button>
+                                <button class="btn btn-secondary" onclick="transcribeDataset()">2. Transcribe All (ASR)</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Soprano Training Config -->
+                <div class="card-section" style="margin-top: 20px;" id="soprano-training-config">
+                    <div class="section-header">Soprano Training Configuration</div>
+                    
+                    <div class="form-group">
+                        <label>Model Name</label>
+                        <input type="text" id="soprano-model-name" class="form-control" placeholder="my_custom_voice" value="my_soprano_voice">
+                        <div class="input-hint">Name for the output model (used in TTS backend selection)</div>
+                    </div>
+                    
+                    <div class="form-row" style="gap: 20px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label>Epochs</label>
+                            <input type="number" id="soprano-epochs" class="form-control" value="100" min="1" max="1000">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>Learning Rate</label>
+                            <input type="number" id="soprano-lr" class="form-control" value="0.0001" min="0.000001" max="0.01" step="0.00001">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>Batch Size</label>
+                            <input type="number" id="soprano-batch-size" class="form-control" value="4" min="1" max="32">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row" style="gap: 20px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label>Save Every N Epochs</label>
+                            <input type="number" id="soprano-save-every" class="form-control" value="10" min="1" max="100">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>Warmup Steps</label>
+                            <input type="number" id="soprano-warmup" class="form-control" value="100" min="0" max="1000">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>Gradient Accumulation</label>
+                            <input type="number" id="soprano-grad-accum" class="form-control" value="1" min="1" max="64">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Chatterbox Training Config -->
+                <div class="card-section" style="margin-top: 20px; display: none;" id="chatterbox-training-config">
+                    <div class="section-header">Chatterbox Training Configuration</div>
+                    
+                    <div class="form-group">
+                        <label>Model Name</label>
+                        <input type="text" id="chatterbox-model-name" class="form-control" placeholder="my_custom_voice" value="my_chatterbox_voice">
+                        <div class="input-hint">Name for the output model</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Mode</label>
+                        <div class="form-row" style="gap: 10px;">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="chatterbox-turbo-mode" checked>
+                                <span>Turbo Mode (GPT-2, faster)</span>
+                            </label>
+                        </div>
+                        <div class="input-hint">Turbo: GPT-2 based, faster. Standard: Llama based, more expressive.</div>
+                    </div>
+                    
+                    <div class="form-row" style="gap: 20px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label>Epochs</label>
+                            <input type="number" id="chatterbox-epochs" class="form-control" value="150" min="1" max="1000">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>Learning Rate</label>
+                            <input type="number" id="chatterbox-lr" class="form-control" value="0.00005" min="0.000001" max="0.01" step="0.000001">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>Batch Size</label>
+                            <input type="number" id="chatterbox-batch-size" class="form-control" value="4" min="1" max="32">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row" style="gap: 20px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label>Gradient Accumulation</label>
+                            <input type="number" id="chatterbox-grad-accum" class="form-control" value="8" min="1" max="64">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>
+                                <input type="checkbox" id="chatterbox-preprocess" checked>
+                                Run Preprocessing
+                            </label>
+                            <div class="input-hint">Extract embeddings before training (required first time)</div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Speaker Reference Audio (Optional)</label>
+                        <div class="form-row" style="gap: 10px;">
+                            <input type="text" id="chatterbox-speaker-ref" class="form-control" placeholder="Path to reference audio for voice cloning" style="flex: 1;">
+                            <button class="btn btn-secondary" onclick="browseSpeakerRef()">Browse</button>
+                        </div>
+                        <div class="input-hint">3-10 second clean audio sample of the target voice</div>
+                    </div>
+                </div>
+                
+                <!-- Training Controls -->
+                <div class="card-section" style="margin-top: 20px;">
+                    <div class="section-header">Training Control</div>
+                    
+                    <div class="form-row" style="gap: 10px;">
+                        <button class="btn btn-primary" onclick="startTraining()" id="start-training-btn">Start Training</button>
+                        <button class="btn btn-secondary" onclick="cancelTraining()" id="cancel-training-btn" disabled>Cancel</button>
+                    </div>
+                    
+                    <!-- Progress Section -->
+                    <div id="training-progress-section" style="display: none; margin-top: 20px;">
+                        <div class="form-group">
+                            <label>Training Progress</label>
+                            <div class="progress-bar-container" style="background: var(--bg-tertiary); border-radius: 8px; height: 24px; overflow: hidden;">
+                                <div id="training-progress-bar" style="background: var(--primary); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                            </div>
+                            <div id="training-progress-text" style="text-align: center; margin-top: 8px; color: var(--text-muted);">
+                                Ready to start
+                            </div>
+                        </div>
+                        
+                        <div class="form-row" style="gap: 20px; margin-top: 12px;">
+                            <div style="flex: 1; text-align: center;">
+                                <div id="training-step-label" style="color: var(--text-muted); font-size: 12px;">Step</div>
+                                <div id="training-epoch" style="font-size: 24px; font-weight: bold;">-</div>
+                            </div>
+                            <div style="flex: 1; text-align: center;">
+                                <div style="color: var(--text-muted); font-size: 12px;">Loss</div>
+                                <div id="training-loss" style="font-size: 24px; font-weight: bold;">-</div>
+                            </div>
+                            <div style="flex: 1; text-align: center;">
+                                <div style="color: var(--text-muted); font-size: 12px;">ETA</div>
+                                <div id="training-eta" style="font-size: 24px; font-weight: bold;">-</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Training Log -->
+                    <div class="form-group" style="margin-top: 20px;">
+                        <label>Training Log</label>
+                        <div id="training-log" style="background: var(--bg-tertiary); border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; color: var(--text-muted);">
+                            Waiting for training to start...
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Trained Models -->
+                <div class="card-section" style="margin-top: 20px;">
+                    <div class="section-header">Trained Models</div>
+                    
+                    <div class="form-group">
+                        <label>Custom Soprano Models</label>
+                        <div id="soprano-models-list" style="color: var(--text-muted);">
+                            No custom Soprano models found.
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Custom Chatterbox Models</label>
+                        <div id="chatterbox-models-list" style="color: var(--text-muted);">
+                            No custom Chatterbox models found.
+                        </div>
+                    </div>
+                    
+                    <button class="btn btn-secondary" onclick="refreshTrainedModels()" style="margin-top: 12px;">Refresh Models</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
@@ -1301,6 +1625,8 @@
         
         function collectTTSRequest() {
             const text = document.getElementById('text-input')?.value.trim() || '';
+            const ttsBackend = getElementValue('tts-backend') || 'chatterbox';
+            const chatterboxModel = ttsBackend === 'chatterbox' ? (getElementValue('chatterbox-model') || null) : null;
             return {
                 input: text,
                 rvc_model: getElementChecked('enable-rvc') ? getElementValue('model-select') : null,
@@ -1308,6 +1634,8 @@
                 enable_post: getElementChecked('enable-post'),
                 enable_background: getElementChecked('enable-background'),
                 tts_mode: getElementValue('tts-mode') || 'chunked',
+                tts_backend: ttsBackend,
+                chatterbox_model: chatterboxModel,
                 tts_batch_tokens: parseInt(getElementValue('tts-batch-tokens')) || 50,
                 tts_token_method: document.querySelector('input[name="token-method"]:checked')?.value || 'tiktoken',
                 pitch_algo: getElementValue('pitch-algo') || 'rmvpe+',
@@ -1350,7 +1678,11 @@
                 bg_fade_outs: getElementChecked('enable-background') && typeof getBgTracks === 'function' ? getBgTracks().map(t=>parseFloat(t.fade_out)||0) : [],
                 server_mix_background: true,  // Mix background on server for streaming
                 output_volume: parseFloat(getElementValue('output-volume')) || 1.0,
-                chatterbox_seed: parseInt(getElementValue('chatterbox-seed')) || 0
+                chatterbox_seed: parseInt(getElementValue('chatterbox-seed')) || 0,
+                save_output: getElementChecked('save-output'),
+                soprano_temperature: ttsBackend === 'soprano' ? getFloatValue('soprano-temperature', 0.7) : null,
+                soprano_top_p: ttsBackend === 'soprano' ? getFloatValue('soprano-top-p', 0.95) : null,
+                soprano_repetition_penalty: ttsBackend === 'soprano' ? getFloatValue('soprano-repetition-penalty', 1.2) : null
             };
         }
         
@@ -1652,6 +1984,108 @@
             // Start with dot at left position (-90° spatial angle = left ear)
             updatePanVisualization(-90);
         })();
+
+        function updateTTSBackendVisibility() {
+            const backend = getElementValue('tts-backend') || 'chatterbox';
+            const isSoprano = backend === 'soprano';
+            const isChatterbox = backend === 'chatterbox';
+            
+            // Show Soprano settings only for Soprano backend
+            const sopranoSection = document.getElementById('soprano-settings');
+            if (sopranoSection) {
+                sopranoSection.style.display = isSoprano ? 'block' : 'none';
+            }
+            
+            // Show voice cloning section only for Chatterbox backend
+            const voiceCloningSection = document.getElementById('chatterbox-voice-cloning-section');
+            if (voiceCloningSection) {
+                voiceCloningSection.style.display = isChatterbox ? 'block' : 'none';
+            }
+            
+            // Show Chatterbox model section only for Chatterbox backend
+            const chatterboxModelSection = document.getElementById('chatterbox-model-section');
+            if (chatterboxModelSection) {
+                chatterboxModelSection.style.display = isChatterbox ? 'block' : 'none';
+            }
+        }
+        
+        function updateTTSBackendUI() {
+            updateTTSBackendVisibility();
+        }
+        
+        async function refreshChatterboxModels() {
+            const select = document.getElementById('chatterbox-model');
+            if (!select) return;
+            
+            // Keep current selection
+            const currentValue = select.value;
+            
+            // Clear existing options except default
+            select.innerHTML = '<option value="">Default (Base Model)</option>';
+            
+            let chatterboxModels = [];
+            
+            // Try training server first
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/models`);
+                if (res.ok) {
+                    const data = await res.json();
+                    chatterboxModels = data.chatterbox || [];
+                }
+            } catch (e) {
+                console.log('Training server not available, trying Chatterbox server...');
+            }
+            
+            // Fallback to Chatterbox server if no models found
+            if (chatterboxModels.length === 0) {
+                try {
+                    const res = await fetch(`${CHATTERBOX_URL}/v1/models`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        // Chatterbox server returns models in a different format
+                        const customModels = (data.models || []).filter(m => m.type === 'custom' && m.valid);
+                        chatterboxModels = customModels.map(m => ({
+                            name: m.name,
+                            path: m.path,
+                            files: m.checkpoint_files
+                        }));
+                    }
+                } catch (e) {
+                    console.log('Could not fetch models from Chatterbox server:', e);
+                }
+            }
+            
+            // Add models to dropdown
+            if (chatterboxModels.length > 0) {
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = 'Custom Trained Models';
+                
+                chatterboxModels.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.name; // Use name instead of path for cleaner switching
+                    const fileCount = Array.isArray(model.files) ? model.files.length : (model.files || 0);
+                    option.textContent = model.name + (fileCount ? ` (${fileCount} checkpoint${fileCount > 1 ? 's' : ''})` : '');
+                    optgroup.appendChild(option);
+                });
+                
+                select.appendChild(optgroup);
+            }
+            
+            // Restore selection if still valid
+            if (currentValue) {
+                const options = Array.from(select.options);
+                if (options.some(o => o.value === currentValue)) {
+                    select.value = currentValue;
+                }
+            }
+        }
+
+        const ttsBackendSelect = document.getElementById('tts-backend');
+        if (ttsBackendSelect) {
+            ttsBackendSelect.addEventListener('change', updateTTSBackendVisibility);
+        }
+        updateTTSBackendVisibility();
+        refreshChatterboxModels(); // Load custom models on page init
         
         // Auto-save on changes
         document.addEventListener('change', (e) => {
@@ -1691,6 +2125,9 @@
                     }
                 }
             }
+            
+            // Update TTS backend visibility after settings are loaded
+            updateTTSBackendVisibility();
         });
 
         // Keyboard shortcuts
@@ -1723,7 +2160,7 @@
                 }
             });
             // Update tab content visibility using IDs for reliability
-            const tabContentIds = ['tab-0', 'tab-1', 'tab-2', 'tab-3', 'tab-4', 'tab-5', 'tab-6'];
+            const tabContentIds = ['tab-0', 'tab-1', 'tab-2', 'tab-3', 'tab-4', 'tab-5', 'tab-6', 'tab-7'];
             tabContentIds.forEach((tabId, i) => {
                 const content = document.getElementById(tabId);
                 if (content) {
@@ -1995,11 +2432,14 @@
                 return;
             }
 
-            // Check prompt audio requirement for voice cloning
+            // Check prompt audio requirement for Chatterbox (voice cloning)
+            const ttsBackend = getElementValue('tts-backend') || 'chatterbox';
             const promptAudioInput = document.getElementById('chatterbox-prompt-audio');
             const hasNewFile = promptAudioInput && promptAudioInput.files && promptAudioInput.files.length > 0;
             const hasSavedPath = window.lastChatterboxPromptPath;
-            if (!hasNewFile && !hasSavedPath) {
+            
+            // Soprano doesn't need prompt audio - it uses a fixed voice
+            if (ttsBackend === 'chatterbox' && !hasNewFile && !hasSavedPath) {
                 showToast('Voice cloning requires a prompt audio file (5+ seconds minimum, 10+ recommended)', 'warn');
                 return;
             }
@@ -2024,36 +2464,60 @@
             // Collect all parameters using unified collection function
             const params = collectTTSRequest();
             
-            // Handle prompt audio upload for voice cloning
-            if (hasNewFile) {
-                // Upload new prompt audio file
-                const formData = new FormData();
-                formData.append('file', promptAudioInput.files[0]);
-                
-                statusEl.textContent = 'Uploading prompt audio for voice cloning...';
-                
-                const uploadResponse = await fetch('/api/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                if (!uploadResponse.ok) {
-                    throw new Error('Failed to upload prompt audio file');
+            // Switch Chatterbox model if needed
+            if (ttsBackend === 'chatterbox' && params.chatterbox_model) {
+                statusEl.textContent = 'Switching to custom model...';
+                try {
+                    await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=${encodeURIComponent(params.chatterbox_model)}`, {
+                        method: 'POST'
+                    });
+                } catch (e) {
+                    console.warn('Model switch failed, using current model:', e);
                 }
-                
-                const uploadResult = await uploadResponse.json();
-                const uploadedPath = uploadResult.path;
-                
-                params.chatterbox_prompt_audio = uploadedPath;
-                
-                // Save the path for future use
-                window.lastChatterboxPromptPath = uploadedPath;
-                window.lastChatterboxPromptFilename = promptAudioInput.files[0].name;
-                saveSettings();
-            } else if (hasSavedPath) {
-                // Use previously uploaded file path
-                params.chatterbox_prompt_audio = hasSavedPath;
+            } else if (ttsBackend === 'chatterbox' && !params.chatterbox_model) {
+                // Ensure default model is loaded
+                try {
+                    await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=default`, {
+                        method: 'POST'
+                    });
+                } catch (e) {
+                    // Ignore - default is probably already loaded
+                }
             }
+            
+            // Handle prompt audio upload for voice cloning (Chatterbox only)
+            if (ttsBackend === 'chatterbox') {
+                if (hasNewFile) {
+                    // Upload new prompt audio file
+                    const formData = new FormData();
+                    formData.append('file', promptAudioInput.files[0]);
+                    
+                    statusEl.textContent = 'Uploading prompt audio for voice cloning...';
+                    
+                    const uploadResponse = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!uploadResponse.ok) {
+                        throw new Error('Failed to upload prompt audio file');
+                    }
+                    
+                    const uploadResult = await uploadResponse.json();
+                    const uploadedPath = uploadResult.path;
+                    
+                    params.chatterbox_prompt_audio = uploadedPath;
+                    
+                    // Save the path for future use
+                    window.lastChatterboxPromptPath = uploadedPath;
+                    window.lastChatterboxPromptFilename = promptAudioInput.files[0].name;
+                    saveSettings();
+                } else if (hasSavedPath) {
+                    // Use previously uploaded file path
+                    params.chatterbox_prompt_audio = hasSavedPath;
+                }
+            }
+            // Soprano doesn't need prompt audio - it uses a fixed voice
 
             try {
                 console.log('[Generate] Sending params:', JSON.stringify(params, null, 2));
@@ -2199,7 +2663,7 @@
                                 const event = JSON.parse(eventData.slice(6));
                                 
                                 if (event.type === 'start') {
-                                    totalChunks = event.chunks;
+                                    totalChunks = event.chunks || event.total || totalChunks;
                                     // Store request ID for cancellation
                                     if (event.request_id) {
                                         currentRequestId = event.request_id;
@@ -2233,17 +2697,13 @@
                                     break;
                                     
                                 } else if (event.type === 'chunk') {
+                                    if (!totalChunks && event.total) {
+                                        totalChunks = event.total;
+                                    }
                                     chunksReceived++;
-                                    const progress = Math.round((chunksReceived / totalChunks) * 100);
+                                    const progress = Math.round((chunksReceived / Math.max(1, totalChunks)) * 100);
                                     progressFill.style.width = `${progress}%`;
                                     progressFill.textContent = `${progress}%`;
-                                    
-                                    // Track saved file path if available
-                                    if (event.file) {
-                                        window.streamingChunkFiles = window.streamingChunkFiles || [];
-                                        window.streamingChunkFiles.push(event.file);
-                                        console.log(`[Stream] Chunk ${event.index + 1} saved: ${event.file}`);
-                                    }
                                     
                                     statusEl.textContent = `Streaming: ${chunksReceived}/${totalChunks} chunks (${event.duration}s)`;
                                     
@@ -2254,6 +2714,7 @@
                                     // Decode and schedule playback
                                     try {
                                         const audioBuffer = await audioContext.decodeAudioData(audioBytes.buffer.slice(0));
+                                        console.log(`[Audio Debug] Chunk ${chunksReceived}: ctx.sampleRate=${audioContext.sampleRate}, buffer.sampleRate=${audioBuffer.sampleRate}, duration=${audioBuffer.duration.toFixed(2)}s, length=${audioBuffer.length}`);
                                         const source = audioContext.createBufferSource();
                                         source.buffer = audioBuffer;
                                         source.connect(audioContext.destination);  // Volume applied server-side
@@ -2273,6 +2734,14 @@
                                                 startBackgroundStream(window.bgStreamInfo);
                                             }
                                         }
+                                        
+                                        // If scheduled time fell behind (slow chunk delivery), catch up to current time
+                                        // This prevents chunks from playing immediately/overlapping
+                                        if (scheduledTime < audioContext.currentTime) {
+                                            console.log(`[Audio] Schedule time behind by ${(audioContext.currentTime - scheduledTime).toFixed(2)}s, catching up`);
+                                            scheduledTime = audioContext.currentTime;
+                                        }
+                                        
                                         source.start(scheduledTime);
                                         scheduledTime += audioBuffer.duration;
                                         
@@ -2281,12 +2750,6 @@
                                     }
                                     
                                 } else if (event.type === 'complete') {
-                                    // Store all saved file paths
-                                    if (event.files && event.files.length > 0) {
-                                        window.lastStreamingFiles = event.files;
-                                        console.log('[Stream] All saved files:', event.files);
-                                    }
-                                    
                                     // Schedule background stream stop when voice finishes
                                     // Wait for voice to finish playing (scheduledTime - currentTime)
                                     const voiceEndTime = scheduledTime - audioContext.currentTime;
@@ -2368,23 +2831,23 @@
             const trackNum = (window.bgTrackCount || 0) + 1;
             
             trackDiv.innerHTML = `
-                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%;">
-                    <label style="margin: 0; min-width: 50px; font-weight: 600;">BG ${trackNum}:</label>
+                <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
+                    <label style="margin: 0; white-space: nowrap; font-weight: 600;">BG ${trackNum}:</label>
                     <select class="bg-file-select" style="flex: 1; min-width: 150px;" aria-label="Background track ${trackNum} file">
                         <option value="">(none)</option>
                         ${fileOptions}
                     </select>
-                    <label style="margin: 0; font-weight: 600;" title="Volume (0-1)">Vol:</label>
-                    <input type="number" class="bg-volume" value="${volume || 0}" min="0" max="1" step="0.01" style="width: 60px;" aria-label="Volume">
-                    <label style="margin: 0; font-weight: 600;" title="Delay before starting (seconds)">Delay:</label>
-                    <input type="number" class="bg-delay" value="${delayValue}" min="0" max="300" step="0.1" style="width: 60px;" aria-label="Delay">
-                    <label style="margin: 0; font-weight: 600;" title="Fade in duration (seconds)">In:</label>
-                    <input type="number" class="bg-fade-in" value="${fadeInValue}" min="0" max="60" step="0.5" style="width: 55px;" aria-label="Fade in">
-                    <label style="margin: 0; font-weight: 600;" title="Fade out duration (seconds)">Out:</label>
-                    <input type="number" class="bg-fade-out" value="${fadeOutValue}" min="0" max="60" step="0.5" style="width: 55px;" aria-label="Fade out">
-                    <button class="btn btn-danger" onclick="removeBgTrack(this)" style="min-width: 44px;" aria-label="Remove background track ${trackNum}">
-                        <span>🗑️</span>
-                    </button>
+                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                        <label style="margin: 0;" title="Volume (0-1)">Vol:</label>
+                        <input type="number" class="bg-volume" value="${volume || 0}" min="0" max="1" step="0.01" style="width: 72px;" aria-label="Volume">
+                        <label style="margin: 0;" title="Delay (seconds)">Dly:</label>
+                        <input type="number" class="bg-delay" value="${delayValue}" min="0" max="300" step="0.1" style="width: 72px;" aria-label="Delay">
+                        <label style="margin: 0;" title="Fade in (seconds)">In:</label>
+                        <input type="number" class="bg-fade-in" value="${fadeInValue}" min="0" max="60" step="0.5" style="width: 72px;" aria-label="Fade in">
+                        <label style="margin: 0;" title="Fade out (seconds)">Out:</label>
+                        <input type="number" class="bg-fade-out" value="${fadeOutValue}" min="0" max="60" step="0.5" style="width: 72px;" aria-label="Fade out">
+                        <button class="btn btn-danger" onclick="removeBgTrack(this)" style="padding: 4px 8px;" aria-label="Remove background track ${trackNum}">🗑️</button>
+                    </div>
                 </div>
             `;
             tracksDiv.appendChild(trackDiv);
@@ -4699,6 +5162,894 @@
                 showToast(`Execution error: ${err.message}`, 'error');
             }
         }
+
+        // ============================================================================
+        // TTS Training Integration
+        // ============================================================================
+        
+        const TRAINING_SERVER_URL = 'http://127.0.0.1:8895';
+        const CHATTERBOX_URL = 'http://127.0.0.1:8893';
+        let trainingWebSocket = null;
+        let currentTrainingJobId = null;
+        let trainingPollInterval = null;
+        
+        // HTTP polling fallback for training progress
+        function startTrainingPolling(jobId) {
+            if (trainingPollInterval) {
+                clearInterval(trainingPollInterval);
+            }
+            
+            console.log('[Training] Starting HTTP polling for job:', jobId);
+            
+            // Do an immediate poll
+            pollJobStatus(jobId);
+            
+            // Poll every 5 seconds (less aggressive to not interfere with training)
+            trainingPollInterval = setInterval(() => pollJobStatus(jobId), 5000);
+        }
+        
+        async function pollJobStatus(jobId) {
+            if (!jobId) {
+                stopTrainingPolling();
+                return;
+            }
+            
+            const logEl = document.getElementById('training-log');
+            const progressText = document.getElementById('training-progress-text');
+            
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/jobs/${jobId}`);
+                
+                if (!res.ok) {
+                    return;
+                }
+                
+                const data = await res.json();
+                
+                // Update progress text with status
+                if (data.status === 'running') {
+                    if (data.progress && Object.keys(data.progress).length > 0) {
+                        // Show progress in log
+                        const p = data.progress;
+                        let progressMsg = '';
+                        if (p.step && p.total_steps) {
+                            progressMsg = `Step ${p.step}/${p.total_steps}`;
+                        } else if (p.epoch) {
+                            progressMsg = `Epoch ${p.epoch}`;
+                        }
+                        if (p.loss) {
+                            progressMsg += ` | Loss: ${p.loss.toFixed(4)}`;
+                        }
+                        if (progressMsg) {
+                            progressText.textContent = progressMsg;
+                        }
+                        
+                        handleTrainingProgress({
+                            type: 'progress',
+                            ...data.progress
+                        });
+                    } else {
+                        progressText.textContent = 'Training in progress (waiting for first update)...';
+                    }
+                }
+                
+                // Check for completion
+                if (data.status === 'completed') {
+                    logEl.innerHTML += `<div style="color: var(--success);">[${new Date().toLocaleTimeString()}] Training completed!</div>`;
+                    handleTrainingProgress({
+                        type: 'status',
+                        status: 'completed',
+                        output_model: data.output_model
+                    });
+                    stopTrainingPolling();
+                } else if (data.status === 'failed') {
+                    logEl.innerHTML += `<div style="color: var(--danger);">[${new Date().toLocaleTimeString()}] Training failed: ${data.error}</div>`;
+                    handleTrainingProgress({
+                        type: 'status',
+                        status: 'failed',
+                        error: data.error
+                    });
+                    stopTrainingPolling();
+                }
+            } catch (e) {
+                console.error('[Training] Polling error:', e);
+            }
+        }
+        
+        function stopTrainingPolling() {
+            if (trainingPollInterval) {
+                clearInterval(trainingPollInterval);
+                trainingPollInterval = null;
+            }
+        }
+        
+        // Update UI based on selected training backend
+        function updateTrainingUI() {
+            const backend = document.getElementById('training-backend').value;
+            const sopranoConfig = document.getElementById('soprano-training-config');
+            const chatterboxConfig = document.getElementById('chatterbox-training-config');
+            const hint = document.getElementById('training-backend-hint');
+            
+            if (backend === 'soprano') {
+                sopranoConfig.style.display = 'block';
+                chatterboxConfig.style.display = 'none';
+                hint.textContent = 'Soprano: 80M params, very fast training. Creates a custom voice model.';
+            } else {
+                sopranoConfig.style.display = 'none';
+                chatterboxConfig.style.display = 'block';
+                hint.textContent = 'Chatterbox: Full voice cloning with audio prompts. Supports both Standard (Llama) and Turbo (GPT-2) modes.';
+            }
+        }
+        
+        // Dataset mode toggle
+        function setDatasetMode(mode) {
+            const simpleBtn = document.getElementById('dataset-mode-simple');
+            const advancedBtn = document.getElementById('dataset-mode-advanced');
+            const simpleMode = document.getElementById('dataset-simple-mode');
+            const advancedMode = document.getElementById('dataset-advanced-mode');
+            
+            if (mode === 'simple') {
+                simpleBtn.classList.add('active');
+                advancedBtn.classList.remove('active');
+                simpleMode.style.display = 'block';
+                advancedMode.style.display = 'none';
+            } else {
+                simpleBtn.classList.remove('active');
+                advancedBtn.classList.add('active');
+                simpleMode.style.display = 'none';
+                advancedMode.style.display = 'block';
+                loadDatasets();
+            }
+        }
+        
+        // Browse for dataset folder (simple mode)
+        function browseDatasetFolder() {
+            // In browser context, prompt user to enter path
+            const path = prompt('Enter the full path to your dataset folder:');
+            if (path) {
+                document.getElementById('training-dataset-path').value = path;
+                validateDataset();
+            }
+        }
+        
+        // Validate dataset folder
+        async function validateDataset() {
+            const path = document.getElementById('training-dataset-path').value;
+            if (!path) {
+                showToast('Please enter a dataset path', 'error');
+                return;
+            }
+            
+            const statusDiv = document.getElementById('dataset-validation-status');
+            const messageDiv = document.getElementById('dataset-validation-message');
+            
+            try {
+                const formData = new FormData();
+                formData.append('path', path);
+                
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/validate`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await res.json();
+                
+                statusDiv.style.display = 'block';
+                
+                if (data.valid) {
+                    statusDiv.style.background = 'rgba(76, 175, 80, 0.1)';
+                    statusDiv.style.border = '1px solid var(--success)';
+                    messageDiv.innerHTML = `
+                        <div style="color: var(--success); font-weight: bold;">Dataset Valid</div>
+                        <div style="color: var(--text-muted); margin-top: 4px;">Samples: ${data.samples}</div>
+                    `;
+                } else {
+                    statusDiv.style.background = 'rgba(244, 67, 54, 0.1)';
+                    statusDiv.style.border = '1px solid var(--danger)';
+                    messageDiv.innerHTML = `
+                        <div style="color: var(--danger); font-weight: bold;">Validation Failed</div>
+                        <ul style="color: var(--text-muted); margin-top: 4px; margin-left: 20px;">
+                            ${data.errors.map(e => `<li>${e}</li>`).join('')}
+                        </ul>
+                    `;
+                }
+            } catch (err) {
+                statusDiv.style.display = 'block';
+                statusDiv.style.background = 'rgba(244, 67, 54, 0.1)';
+                statusDiv.style.border = '1px solid var(--danger)';
+                messageDiv.innerHTML = `
+                    <div style="color: var(--danger);">Error connecting to training server</div>
+                    <div style="color: var(--text-muted); margin-top: 4px;">Make sure the training server is running on port 8895</div>
+                `;
+            }
+        }
+        
+        // Load available datasets
+        async function loadDatasets() {
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets`);
+                const data = await res.json();
+                
+                const backend = document.getElementById('training-backend').value;
+                const select = document.getElementById('training-dataset-select');
+                
+                select.innerHTML = '<option value="">-- Select dataset --</option>';
+                
+                const datasets = data[backend] || [];
+                datasets.forEach(ds => {
+                    const opt = document.createElement('option');
+                    opt.value = ds.path;
+                    opt.textContent = `${ds.name} (${ds.samples} samples)${ds.valid ? '' : ' - Invalid'}`;
+                    select.appendChild(opt);
+                });
+            } catch (err) {
+                console.error('Failed to load datasets:', err);
+            }
+        }
+        
+        // Select dataset
+        async function selectDataset() {
+            const select = document.getElementById('training-dataset-select');
+            const uploadSection = document.getElementById('dataset-upload-section');
+            const filesList = document.getElementById('training-files-list');
+            
+            if (select.value) {
+                uploadSection.style.display = 'block';
+                document.getElementById('training-dataset-path').value = select.value;
+                await refreshDatasetFiles();
+            } else {
+                uploadSection.style.display = 'none';
+                filesList.style.display = 'none';
+            }
+        }
+        
+        // Refresh files list for selected dataset
+        async function refreshDatasetFiles() {
+            const backend = document.getElementById('training-backend').value;
+            const datasetPath = document.getElementById('training-dataset-select').value;
+            const datasetName = datasetPath.split(/[\\/]/).pop();
+            
+            if (!datasetName) return;
+            
+            const filesList = document.getElementById('training-files-list');
+            const filesContainer = document.getElementById('training-files-container');
+            const filesCount = document.getElementById('training-files-count');
+            
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}/files`);
+                if (res.ok) {
+                    const data = await res.json();
+                    
+                    if (data.files && data.files.length > 0) {
+                        filesList.style.display = 'block';
+                        filesCount.textContent = `(${data.total} files, ${data.transcribed_count} transcribed)`;
+                        filesContainer.innerHTML = data.files.map(f => `
+                            <div style="padding: 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                                <span style="word-break: break-all; margin-right: 10px;">${f.name}</span>
+                                <span style="color: ${f.transcribed ? 'var(--success)' : 'var(--text-muted)'}; font-size: 12px; white-space: nowrap;">${f.transcribed ? '✓ Transcribed' : 'No transcript'}</span>
+                            </div>
+                        `).join('');
+                    } else {
+                        filesContainer.innerHTML = '<div style="color: var(--text-muted); padding: 8px;">No files yet. Upload audio files above.</div>';
+                        filesCount.textContent = '(0 files)';
+                        filesList.style.display = 'block';
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to load dataset files:', err);
+            }
+        }
+        
+        // Create new dataset
+        async function createNewDataset() {
+            const name = document.getElementById('new-dataset-name').value.trim();
+            if (!name) {
+                showToast('Please enter a dataset name', 'error');
+                return;
+            }
+            
+            const backend = document.getElementById('training-backend').value;
+            
+            try {
+                const formData = new FormData();
+                formData.append('name', name);
+                formData.append('backend', backend);
+                
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/create`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast(`Dataset '${data.name}' created`, 'success');
+                    document.getElementById('new-dataset-name').value = '';
+                    loadDatasets();
+                } else {
+                    showToast(data.detail || 'Failed to create dataset', 'error');
+                }
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
+        }
+        
+        // Delete selected dataset
+        async function deleteSelectedDataset() {
+            const backend = document.getElementById('training-backend').value;
+            const datasetPath = document.getElementById('training-dataset-select').value;
+            const datasetName = datasetPath.split(/[\\/]/).pop();
+            
+            if (!datasetName) {
+                showToast('Please select a dataset first', 'error');
+                return;
+            }
+            
+            if (!confirm(`Are you sure you want to delete dataset "${datasetName}"? This cannot be undone.`)) {
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast(data.message || 'Dataset deleted', 'success');
+                    document.getElementById('training-dataset-select').value = '';
+                    document.getElementById('dataset-upload-section').style.display = 'none';
+                    document.getElementById('training-files-list').style.display = 'none';
+                    loadDatasets();
+                } else {
+                    showToast(data.detail || 'Failed to delete dataset', 'error');
+                }
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
+        }
+        
+        // Handle file upload for training
+        function handleTrainingDrop(event) {
+            event.preventDefault();
+            const files = event.dataTransfer.files;
+            processTrainingFiles(files);
+        }
+        
+        function handleTrainingUpload(event) {
+            const files = event.target.files;
+            processTrainingFiles(files);
+        }
+        
+        async function processTrainingFiles(files) {
+            const backend = document.getElementById('training-backend').value;
+            const datasetPath = document.getElementById('training-dataset-select').value;
+            const datasetName = datasetPath.split(/[\\/]/).pop();
+            
+            if (!datasetName) {
+                showToast('Please select a dataset first', 'error');
+                return;
+            }
+            
+            const filesList = document.getElementById('training-files-list');
+            const filesContainer = document.getElementById('training-files-container');
+            
+            filesList.style.display = 'block';
+            
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}/upload`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await res.json();
+                    
+                    if (data.success) {
+                        const fileEntry = document.createElement('div');
+                        fileEntry.style.cssText = 'padding: 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;';
+                        fileEntry.innerHTML = `
+                            <span>${data.filename}</span>
+                            <span style="color: var(--success);">Uploaded</span>
+                        `;
+                        filesContainer.appendChild(fileEntry);
+                    }
+                } catch (err) {
+                    console.error(`Failed to upload ${file.name}:`, err);
+                }
+            }
+            
+            showToast(`Uploaded ${files.length} files`, 'success');
+            await refreshDatasetFiles();
+        }
+        
+        // Transcribe dataset using ASR
+        async function transcribeDataset() {
+            const backend = document.getElementById('training-backend').value;
+            const datasetPath = document.getElementById('training-dataset-select').value;
+            const datasetName = datasetPath.split(/[\\/]/).pop();
+            
+            if (!datasetName) {
+                showToast('Please select a dataset first', 'error');
+                return;
+            }
+            
+            try {
+                showToast('Starting transcription...', 'info');
+                
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}/transcribe`, {
+                    method: 'POST'
+                });
+                
+                const data = await res.json();
+                showToast(`Transcription started: ${data.total_files} files`, 'success');
+                
+                // Poll for transcription completion
+                pollForTranscriptionComplete();
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
+        }
+        
+        // Poll for transcription completion and refresh file list
+        async function pollForTranscriptionComplete() {
+            let lastTranscribed = 0;
+            let stableCount = 0;
+            
+            const poll = async () => {
+                const backend = document.getElementById('training-backend').value;
+                const datasetPath = document.getElementById('training-dataset-select').value;
+                const datasetName = datasetPath.split(/[\\/]/).pop();
+                
+                if (!datasetName) return;
+                
+                try {
+                    const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}/files`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        
+                        if (data.transcribed_count === lastTranscribed) {
+                            stableCount++;
+                        } else {
+                            lastTranscribed = data.transcribed_count;
+                            stableCount = 0;
+                            await refreshDatasetFiles();
+                        }
+                        
+                        // If count stable for 3 polls, assume done
+                        if (stableCount < 3 && data.transcribed_count < data.total) {
+                            setTimeout(poll, 2000);
+                        } else {
+                            showToast(`Transcription complete! ${data.transcribed_count}/${data.total} files transcribed`, 'success');
+                            await refreshDatasetFiles();
+                        }
+                    }
+                } catch (err) {
+                    console.error('Poll error:', err);
+                }
+            };
+            
+            setTimeout(poll, 2000);
+        }
+        
+        // Segment long audio files
+        async function segmentDataset() {
+            const backend = document.getElementById('training-backend').value;
+            const datasetPath = document.getElementById('training-dataset-select').value;
+            const datasetName = datasetPath.split(/[\\/]/).pop();
+            
+            if (!datasetName) {
+                showToast('Please select a dataset first', 'error');
+                return;
+            }
+            
+            try {
+                const formData = new FormData();
+                formData.append('min_duration', '3.0');
+                formData.append('max_duration', '10.0');
+                
+                showToast('Segmenting uploaded audio files...', 'info');
+                
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}/segment-all`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(data.message || `Segmenting ${data.total_files} files...`, 'success');
+                    // Auto-refresh file list after segmentation (poll every 3 seconds)
+                    showToast('File list will refresh when segmentation completes...', 'info');
+                    pollForSegmentationComplete();
+                } else {
+                    showToast(data.detail || 'Segmentation failed', 'error');
+                }
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
+        }
+        
+        // Poll for segmentation completion and refresh file list
+        async function pollForSegmentationComplete() {
+            let lastCount = 0;
+            let stableCount = 0;
+            
+            const poll = async () => {
+                const backend = document.getElementById('training-backend').value;
+                const datasetPath = document.getElementById('training-dataset-select').value;
+                const datasetName = datasetPath.split(/[\\/]/).pop();
+                
+                if (!datasetName) return;
+                
+                try {
+                    const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets/${backend}/${datasetName}/files`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        
+                        if (data.total === lastCount) {
+                            stableCount++;
+                        } else {
+                            lastCount = data.total;
+                            stableCount = 0;
+                            await refreshDatasetFiles();
+                        }
+                        
+                        // If count stable for 3 polls (9 seconds), assume done
+                        if (stableCount < 3) {
+                            setTimeout(poll, 3000);
+                        } else {
+                            showToast('Segmentation complete!', 'success');
+                            await refreshDatasetFiles();
+                        }
+                    }
+                } catch (err) {
+                    console.error('Poll error:', err);
+                }
+            };
+            
+            setTimeout(poll, 3000);
+        }
+        
+        // Browse for speaker reference audio
+        function browseSpeakerRef() {
+            const path = prompt('Enter the path to speaker reference audio (3-10 seconds):');
+            if (path) {
+                document.getElementById('chatterbox-speaker-ref').value = path;
+            }
+        }
+        
+        // Connect to training WebSocket
+        function connectTrainingWebSocket() {
+            return new Promise((resolve, reject) => {
+                // Already connected
+                if (trainingWebSocket && trainingWebSocket.readyState === WebSocket.OPEN) {
+                    console.log('[Training] WebSocket already connected');
+                    resolve();
+                    return;
+                }
+                
+                // Close existing connection if any
+                if (trainingWebSocket) {
+                    try { trainingWebSocket.close(); } catch(e) {}
+                    trainingWebSocket = null;
+                }
+                
+                console.log('[Training] Attempting WebSocket connection...');
+                
+                try {
+                    trainingWebSocket = new WebSocket(`ws://127.0.0.1:8895/ws/training`);
+                } catch (e) {
+                    console.error('[Training] Failed to create WebSocket:', e);
+                    reject(e);
+                    return;
+                }
+                
+                let resolved = false;
+                
+                trainingWebSocket.onopen = () => {
+                    console.log('[Training] WebSocket connected successfully');
+                    resolved = true;
+                    resolve();
+                };
+                
+                trainingWebSocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleTrainingProgress(data);
+                    } catch (e) {
+                        console.error('[Training] Failed to parse message:', e);
+                    }
+                };
+                
+                trainingWebSocket.onclose = (event) => {
+                    console.log('[Training] WebSocket closed:', event.code, event.reason);
+                    if (!resolved) {
+                        reject(new Error(`WebSocket closed: ${event.code}`));
+                    }
+                    // Reconnect after delay if training is active
+                    if (currentTrainingJobId) {
+                        setTimeout(() => connectTrainingWebSocket().catch(() => {}), 2000);
+                    }
+                };
+                
+                trainingWebSocket.onerror = (err) => {
+                    console.error('[Training] WebSocket error:', err);
+                    if (!resolved) {
+                        reject(new Error('WebSocket connection failed'));
+                    }
+                };
+                
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    if (!resolved) {
+                        console.error('[Training] WebSocket connection timeout');
+                        try { trainingWebSocket.close(); } catch(e) {}
+                        reject(new Error('WebSocket connection timeout'));
+                    }
+                }, 5000);
+            });
+        }
+        
+        // Handle training progress updates
+        function handleTrainingProgress(data) {
+            try {
+                const progressText = document.getElementById('training-progress-text');
+                const epochEl = document.getElementById('training-epoch');
+                const lossEl = document.getElementById('training-loss');
+                const etaEl = document.getElementById('training-eta');
+                const progressBar = document.getElementById('training-progress-bar');
+                const logEl = document.getElementById('training-log');
+                
+                // Skip noise
+                if (data.type === 'heartbeat' || data.type === 'pong' || data.type === 'connected') {
+                    return;
+                }
+                
+                // Handle any message with step/loss data directly - don't care about type
+                if (data.step !== undefined || data.loss !== undefined || data.epoch !== undefined) {
+                    const step = data.step || 0;
+                    const totalSteps = data.total_steps || 0;
+                    const epoch = data.epoch || 0;
+                    const loss = data.loss;
+                    const gradNorm = data.grad_norm;
+                    const eta = data.eta_seconds;
+                    
+                    const stepLabel = document.getElementById('training-step-label');
+                    
+                    // Detect phase: preprocessing has no loss, training has loss
+                    const isPreprocessing = (loss === undefined && totalSteps > 0 && totalSteps < 1000);
+                    
+                    if (isPreprocessing) {
+                        // Preprocessing phase - processing audio files
+                        stepLabel.textContent = 'Preprocessing';
+                        progressText.textContent = `Processing audio files: ${step}/${totalSteps}`;
+                        epochEl.textContent = `${step}/${totalSteps}`;
+                        const pct = (step / totalSteps) * 100;
+                        progressBar.style.width = pct + '%';
+                        lossEl.textContent = '-';
+                        etaEl.textContent = '-';
+                    } else if (totalSteps > 0) {
+                        // Training phase
+                        stepLabel.textContent = 'Step';
+                        progressText.textContent = `Step ${step}/${totalSteps} (Epoch ${epoch})`;
+                        epochEl.textContent = `${step}/${totalSteps}`;
+                        const pct = (step / totalSteps) * 100;
+                        progressBar.style.width = pct + '%';
+                        
+                        // Update loss (show loss + grad_norm if available)
+                        if (loss !== undefined) {
+                            let lossText = parseFloat(loss).toFixed(4);
+                            if (gradNorm !== undefined) {
+                                lossText += ` (grad: ${parseFloat(gradNorm).toFixed(2)})`;
+                            }
+                            lossEl.textContent = lossText;
+                        }
+                        
+                        // Update ETA
+                        if (eta) {
+                            const mins = Math.floor(eta / 60);
+                            const secs = Math.floor(eta % 60);
+                            etaEl.textContent = mins + 'm ' + secs + 's';
+                        }
+                    } else if (epoch > 0) {
+                        stepLabel.textContent = 'Epoch';
+                        progressText.textContent = `Epoch ${epoch}`;
+                        epochEl.textContent = epoch;
+                    }
+                    return;
+                }
+                
+                // Handle status changes
+                if (data.type === 'status') {
+                    if (data.status === 'running') {
+                        progressText.textContent = 'Training running...';
+                    } else if (data.status === 'completed') {
+                        progressBar.style.width = '100%';
+                        progressText.textContent = 'Training completed!';
+                        showToast('Training completed successfully!', 'success');
+                        document.getElementById('start-training-btn').disabled = false;
+                        document.getElementById('cancel-training-btn').disabled = true;
+                        currentTrainingJobId = null;
+                        stopTrainingPolling();
+                        refreshTrainedModels();
+                    } else if (data.status === 'failed') {
+                        progressText.textContent = 'Training failed: ' + (data.error || 'Unknown error');
+                        showToast('Training failed: ' + (data.error || 'Unknown error'), 'error');
+                        document.getElementById('start-training-btn').disabled = false;
+                        document.getElementById('cancel-training-btn').disabled = true;
+                        currentTrainingJobId = null;
+                        stopTrainingPolling();
+                    } else if (data.status === 'cancelled') {
+                        progressText.textContent = 'Training cancelled';
+                        showToast('Training cancelled', 'info');
+                        document.getElementById('start-training-btn').disabled = false;
+                        document.getElementById('cancel-training-btn').disabled = true;
+                        currentTrainingJobId = null;
+                        stopTrainingPolling();
+                    }
+                }
+            } catch (err) {
+                console.error('[Training] Progress update error:', err);
+            }
+        }
+        
+        // Start training
+        async function startTraining() {
+            const backend = document.getElementById('training-backend').value;
+            const datasetPath = document.getElementById('training-dataset-path').value;
+            
+            if (!datasetPath) {
+                showToast('Please select or enter a dataset path', 'error');
+                return;
+            }
+            
+            // Connect WebSocket for progress
+            const progressText = document.getElementById('training-progress-text');
+            try {
+                progressText.textContent = 'Connecting to training server...';
+                await connectTrainingWebSocket();
+                progressText.textContent = 'Starting training...';
+            } catch (err) {
+                console.error('[Training] Failed to connect WebSocket:', err);
+                progressText.textContent = 'Starting training...';
+            }
+            
+            // Clear previous log
+            document.getElementById('training-log').innerHTML = '';
+            
+            let requestBody;
+            
+            if (backend === 'soprano') {
+                requestBody = {
+                    model_name: document.getElementById('soprano-model-name').value || 'my_soprano_voice',
+                    dataset_path: datasetPath,
+                    epochs: parseInt(document.getElementById('soprano-epochs').value) || 100,
+                    learning_rate: parseFloat(document.getElementById('soprano-lr').value) || 0.0001,
+                    batch_size: parseInt(document.getElementById('soprano-batch-size').value) || 4,
+                    save_every: parseInt(document.getElementById('soprano-save-every').value) || 10,
+                    warmup_steps: parseInt(document.getElementById('soprano-warmup').value) || 100,
+                    gradient_accumulation: parseInt(document.getElementById('soprano-grad-accum').value) || 1
+                };
+            } else {
+                requestBody = {
+                    model_name: document.getElementById('chatterbox-model-name').value || 'my_chatterbox_voice',
+                    dataset_path: datasetPath,
+                    is_turbo: document.getElementById('chatterbox-turbo-mode').checked,
+                    epochs: parseInt(document.getElementById('chatterbox-epochs').value) || 150,
+                    learning_rate: parseFloat(document.getElementById('chatterbox-lr').value) || 0.00005,
+                    batch_size: parseInt(document.getElementById('chatterbox-batch-size').value) || 4,
+                    gradient_accumulation: parseInt(document.getElementById('chatterbox-grad-accum').value) || 8,
+                    preprocess: document.getElementById('chatterbox-preprocess').checked,
+                    speaker_reference: document.getElementById('chatterbox-speaker-ref').value || null
+                };
+            }
+            
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/${backend}/train`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                const data = await res.json();
+                
+                if (data.job_id) {
+                    currentTrainingJobId = data.job_id;
+                    showToast(`Training started`, 'success');
+                    document.getElementById('start-training-btn').disabled = true;
+                    document.getElementById('cancel-training-btn').disabled = false;
+                    document.getElementById('training-progress-section').style.display = 'block';
+                    document.getElementById('training-progress-text').textContent = 'Training in progress...';
+                    
+                    // Add to training log
+                    const logEl = document.getElementById('training-log');
+                    logEl.innerHTML = `<div style="color: var(--primary);">[${new Date().toLocaleTimeString()}] Training started</div>`;
+                    
+                    // Start HTTP polling as backup
+                    startTrainingPolling(data.job_id);
+                } else {
+                    showToast(data.detail || 'Failed to start training', 'error');
+                }
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
+        }
+        
+        // Cancel training
+        async function cancelTraining() {
+            if (!currentTrainingJobId) return;
+            
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/jobs/${currentTrainingJobId}/cancel`, {
+                    method: 'POST'
+                });
+                
+                const data = await res.json();
+                showToast(data.message || 'Cancellation requested', 'info');
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
+        }
+        
+        // Refresh trained models list
+        async function refreshTrainedModels() {
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/models`);
+                const data = await res.json();
+                
+                // Update Soprano models list
+                const sopranoList = document.getElementById('soprano-models-list');
+                if (data.soprano && data.soprano.length > 0) {
+                    sopranoList.innerHTML = data.soprano.map(m => `
+                        <div style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px;">
+                            <div style="font-weight: bold;">${m.name}</div>
+                            <div style="color: var(--text-muted); font-size: 12px;">Created: ${new Date(m.created).toLocaleDateString()}</div>
+                        </div>
+                    `).join('');
+                } else {
+                    sopranoList.innerHTML = '<div style="color: var(--text-muted);">No custom Soprano models found.</div>';
+                }
+                
+                // Update Chatterbox models list
+                const chatterboxList = document.getElementById('chatterbox-models-list');
+                if (data.chatterbox && data.chatterbox.length > 0) {
+                    chatterboxList.innerHTML = data.chatterbox.map(m => `
+                        <div style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px;">
+                            <div style="font-weight: bold;">${m.name}</div>
+                            <div style="color: var(--text-muted); font-size: 12px;">
+                                Files: ${m.files.join(', ') || 'None'}<br>
+                                Created: ${new Date(m.created).toLocaleDateString()}
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    chatterboxList.innerHTML = '<div style="color: var(--text-muted);">No custom Chatterbox models found.</div>';
+                }
+            } catch (err) {
+                console.error('Failed to refresh models:', err);
+            }
+        }
+        
+        // Initialize training tab when loaded
+        function initTrainingTab() {
+            updateTrainingUI();
+            refreshTrainedModels();
+        }
+        
+        // Call init when Training tab is shown
+        const originalSwitchTab = window.switchTab || function() {};
+        window.switchTab = function(index) {
+            originalSwitchTab(index);
+            if (index === 7) {
+                initTrainingTab();
+            }
+        };
+        
     </script>
 </body>
 </html>

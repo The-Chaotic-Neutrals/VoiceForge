@@ -1699,6 +1699,85 @@ def save_output(src_path: str, text: str) -> str:
     return output_path
 
 
+@app.post("/v1/resample")
+async def api_resample(
+    audio: UploadFile = File(...),
+    sample_rate: int = Form(44100),
+    volume: float = Form(1.0),
+):
+    """
+    Resample audio to target sample rate and optionally adjust volume.
+    
+    Combined operation is faster than separate calls.
+    Uses SoXr for high-quality resampling.
+    
+    Args:
+        audio: Input audio file
+        sample_rate: Target sample rate (default 44100)
+        volume: Volume multiplier (1.0 = no change, 0.5 = 50%, 2.0 = 200%)
+    
+    Returns:
+        Resampled WAV file
+    """
+    import soxr
+    
+    fd, tmp_input = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    
+    try:
+        content = await audio.read()
+        with open(tmp_input, "wb") as f:
+            f.write(content)
+        
+        # Read audio
+        data, current_sr = sf.read(tmp_input, dtype='float32')
+        
+        needs_resample = current_sr != sample_rate
+        needs_volume = abs(volume - 1.0) >= 0.01
+        
+        # If nothing to do, return original
+        if not needs_resample and not needs_volume:
+            return FileResponse(
+                tmp_input,
+                media_type="audio/wav",
+                filename="resampled.wav",
+            )
+        
+        ops = []
+        if needs_resample:
+            ops.append(f"resample {current_sr}→{sample_rate}Hz")
+        if needs_volume:
+            ops.append(f"volume {int(volume*100)}%")
+        log_info(f"[Resample] Processing: {', '.join(ops)}")
+        
+        # Resample if needed using SoXr VHQ
+        if needs_resample:
+            data = soxr.resample(data, current_sr, sample_rate, quality='VHQ')
+        
+        # Apply volume if needed
+        if needs_volume:
+            data = data * volume
+            data = np.clip(data, -1.0, 1.0)
+        
+        # Write output
+        fd, tmp_output = tempfile.mkstemp(suffix="_resampled.wav")
+        os.close(fd)
+        sf.write(tmp_output, data.astype(np.float32), sample_rate)
+        
+        _safe_unlink(tmp_input)
+        return FileResponse(
+            tmp_output,
+            media_type="audio/wav",
+            filename="resampled.wav",
+            background=BackgroundTask(_safe_unlink, tmp_output),
+        )
+        
+    except Exception as e:
+        _safe_unlink(tmp_input)
+        log_error(f"Resample error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/v1/postprocess")
 async def api_postprocess(
     audio: UploadFile = File(...),
@@ -1777,9 +1856,12 @@ async def api_postprocess(
             "asmr_crispness": asmr_crispness,
         }
 
+        import time as _time
+        t_proc_start = _time.perf_counter()
         log_info(f"[POST] Calling post_process_voice...")
         output_path = post_process_voice(tmp_input, params)
-        log_info(f"[POST] post_process_voice returned: {output_path}")
+        t_proc_end = _time.perf_counter()
+        log_info(f"[POST] post_process_voice completed in {(t_proc_end - t_proc_start)*1000:.0f}ms, output: {output_path}")
         
         if not os.path.exists(output_path):
             raise HTTPException(status_code=500, detail=f"Output file not found: {output_path}")

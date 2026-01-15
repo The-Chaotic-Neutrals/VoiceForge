@@ -298,8 +298,8 @@ class RVCWorkerPool:
             torch.cuda.empty_cache()
 
 
-# Global worker pool
-_saved_num_workers = 1
+# Global worker pool - default to 2 workers for better parallelism
+_saved_num_workers = 2  # Default to 2 workers with modern GPUs
 try:
     import json
     config_path = os.path.join(APP_DIR, "config", "config.json")
@@ -313,6 +313,7 @@ except Exception as e:
     logger.warning(f"Could not load saved config: {e}")
 
 WORKER_POOL = RVCWorkerPool(num_workers=int(os.getenv("RVC_WORKERS", str(_saved_num_workers))))
+logger.info(f"RVC worker pool configured with {WORKER_POOL.num_workers} workers")
 
 
 # ============================================
@@ -908,7 +909,7 @@ async def convert_rvc_stream(
     return StreamingResponse(
         generate_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Request-ID": request_id}
+        headers={"Cache-Control": "no-cache", "Connection": "close", "X-Accel-Buffering": "no", "X-Request-ID": request_id}
     )
 
 
