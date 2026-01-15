@@ -37,3 +37,5 @@ app/config/config.json
 /app/models/soprano
 /app/datasets/chatterbox/Soft
 /app/models/chatterbox_custom/Soft
+/app/training/chatterbox-finetuning/pretrained_models
+/app/training/chatterbox-finetuning/src/chatterbox_/models/s3gen
