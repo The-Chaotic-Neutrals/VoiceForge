@@ -53,9 +53,27 @@ SOPRANO_CUSTOM_DIR = os.path.join(MODELS_DIR, "soprano_custom")
 CHATTERBOX_CUSTOM_DIR = os.path.join(MODELS_DIR, "chatterbox_custom")
 
 # Ensure directories exist
-for d in [TRAINING_DIR, DATASETS_DIR, SOPRANO_CUSTOM_DIR, CHATTERBOX_CUSTOM_DIR,
-          os.path.join(DATASETS_DIR, "soprano"), os.path.join(DATASETS_DIR, "chatterbox")]:
+for d in [TRAINING_DIR, DATASETS_DIR, SOPRANO_CUSTOM_DIR, CHATTERBOX_CUSTOM_DIR]:
     os.makedirs(d, exist_ok=True)
+
+
+def find_dataset_path(name: str) -> str:
+    """Find a dataset by name, checking multiple possible locations.
+    Returns the path if found, raises HTTPException if not found."""
+    # Check locations in order of priority
+    possible_paths = [
+        os.path.join(DATASETS_DIR, name),  # Direct in datasets/
+        os.path.join(DATASETS_DIR, "soprano", name),  # Legacy soprano location
+        os.path.join(DATASETS_DIR, "chatterbox", name),  # Legacy chatterbox location
+        os.path.join(TRAINING_DIR, "chatterbox-finetuning", name),  # Training dir
+        os.path.join(TRAINING_DIR, "soprano-factory", name),  # Training dir
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path) and os.path.isdir(path):
+            return path
+    
+    return None
 
 # Conda paths - find the base conda installation
 CONDA_BASE = None
@@ -746,38 +764,69 @@ async def cancel_job(job_id: str):
 
 @app.get("/v1/datasets")
 async def list_datasets():
-    """List available datasets."""
-    datasets = {"soprano": [], "chatterbox": []}
+    """List available datasets. Both Soprano and Chatterbox use LJSpeech format,
+    so all datasets are available for both backends."""
+    all_datasets = []
+    seen_names = set()
     
+    def scan_dataset_dir(base_dir):
+        """Scan a directory for LJSpeech-format datasets."""
+        if not os.path.exists(base_dir):
+            return
+        for name in os.listdir(base_dir):
+            if name in seen_names:
+                continue  # Skip duplicates
+            dataset_path = os.path.join(base_dir, name)
+            if os.path.isdir(dataset_path):
+                # Check for LJSpeech format (metadata.csv + wavs/)
+                metadata_file = os.path.join(dataset_path, "metadata.csv")
+                wavs_dir = os.path.join(dataset_path, "wavs")
+                
+                has_metadata = os.path.exists(metadata_file)
+                has_wavs = os.path.exists(wavs_dir)
+                
+                # Skip if no metadata.csv at all
+                if not has_metadata:
+                    continue
+                
+                info = {
+                    "name": name,
+                    "path": dataset_path,
+                    "valid": has_metadata,
+                    "has_wavs": has_wavs,
+                    "samples": 0,
+                    "duration_minutes": 0
+                }
+                
+                # Count samples
+                try:
+                    with open(metadata_file, "r", encoding="utf-8") as f:
+                        info["samples"] = sum(1 for _ in f)
+                except:
+                    pass
+                
+                all_datasets.append(info)
+                seen_names.add(name)
+    
+    # Scan main datasets directory (datasets are shared between backends)
+    logger.info(f"Scanning datasets directory: {DATASETS_DIR}")
+    scan_dataset_dir(DATASETS_DIR)
+    logger.info(f"Found {len(all_datasets)} datasets so far")
+    
+    # Also scan backend-specific subdirs for backwards compatibility
     for backend in ["soprano", "chatterbox"]:
         backend_dir = os.path.join(DATASETS_DIR, backend)
-        if os.path.exists(backend_dir):
-            for name in os.listdir(backend_dir):
-                dataset_path = os.path.join(backend_dir, name)
-                if os.path.isdir(dataset_path):
-                    # Check for LJSpeech format
-                    metadata_file = os.path.join(dataset_path, "metadata.csv")
-                    wavs_dir = os.path.join(dataset_path, "wavs")
-                    
-                    info = {
-                        "name": name,
-                        "path": dataset_path,
-                        "valid": os.path.exists(metadata_file) and os.path.exists(wavs_dir),
-                        "samples": 0,
-                        "duration_minutes": 0
-                    }
-                    
-                    if info["valid"]:
-                        # Count samples
-                        try:
-                            with open(metadata_file, "r", encoding="utf-8") as f:
-                                info["samples"] = sum(1 for _ in f)
-                        except:
-                            pass
-                    
-                    datasets[backend].append(info)
+        scan_dataset_dir(backend_dir)
     
-    return datasets
+    # Also scan training directories for existing datasets
+    chatterbox_training_dir = os.path.join(TRAINING_DIR, "chatterbox-finetuning")
+    scan_dataset_dir(chatterbox_training_dir)
+    
+    soprano_training_dir = os.path.join(TRAINING_DIR, "soprano-factory")
+    scan_dataset_dir(soprano_training_dir)
+    
+    # Return same list for both backends since LJSpeech format works for both
+    return {"soprano": all_datasets, "chatterbox": all_datasets}
 
 
 @app.post("/v1/datasets/validate")
@@ -833,15 +882,12 @@ async def validate_dataset(path: str = Form(...)):
 @app.post("/v1/datasets/create")
 async def create_dataset(
     name: str = Form(...),
-    backend: str = Form(...),
+    backend: str = Form(None),  # Backend param kept for compatibility but not used for path
 ):
-    """Create a new empty dataset folder."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
+    """Create a new empty dataset folder. Datasets are shared between backends."""
     # Sanitize name
     safe_name = re.sub(r'[^\w\-_]', '_', name)
-    dataset_path = os.path.join(DATASETS_DIR, backend, safe_name)
+    dataset_path = os.path.join(DATASETS_DIR, safe_name)
     
     if os.path.exists(dataset_path):
         raise HTTPException(status_code=400, detail="Dataset already exists")
@@ -868,11 +914,8 @@ async def upload_audio_to_dataset(
     transcription: Optional[str] = Form(None),
 ):
     """Upload an audio file to a dataset."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
-    dataset_path = os.path.join(DATASETS_DIR, backend, name)
-    if not os.path.exists(dataset_path):
+    dataset_path = find_dataset_path(name)
+    if not dataset_path:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     wavs_dir = os.path.join(dataset_path, "wavs")
@@ -913,11 +956,8 @@ async def transcribe_dataset(
     background_tasks: BackgroundTasks,
 ):
     """Transcribe all audio files in a dataset using ASR."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
-    dataset_path = os.path.join(DATASETS_DIR, backend, name)
-    if not os.path.exists(dataset_path):
+    dataset_path = find_dataset_path(name)
+    if not dataset_path:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     wavs_dir = os.path.join(dataset_path, "wavs")
@@ -1013,11 +1053,8 @@ async def segment_audio(
     background_tasks: BackgroundTasks = None,
 ):
     """Segment a long audio file into chunks using VAD."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
-    dataset_path = os.path.join(DATASETS_DIR, backend, name)
-    if not os.path.exists(dataset_path):
+    dataset_path = find_dataset_path(name)
+    if not dataset_path:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     if not os.path.exists(source_file):
@@ -1119,11 +1156,8 @@ async def segment_all_audio(
     background_tasks: BackgroundTasks = None,
 ):
     """Segment all audio files in the dataset's wavs/ folder using VAD."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
-    dataset_path = os.path.join(DATASETS_DIR, backend, name)
-    if not os.path.exists(dataset_path):
+    dataset_path = find_dataset_path(name)
+    if not dataset_path:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     wavs_dir = os.path.join(dataset_path, "wavs")
@@ -1236,11 +1270,8 @@ async def segment_all_audio(
 @app.get("/v1/datasets/{backend}/{name}/files")
 async def list_dataset_files(backend: str, name: str):
     """List all files in a dataset."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
-    dataset_path = os.path.join(DATASETS_DIR, backend, name)
-    if not os.path.exists(dataset_path):
+    dataset_path = find_dataset_path(name)
+    if not dataset_path:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     wavs_dir = os.path.join(dataset_path, "wavs")
@@ -1281,11 +1312,8 @@ async def list_dataset_files(backend: str, name: str):
 @app.delete("/v1/datasets/{backend}/{name}")
 async def delete_dataset(backend: str, name: str):
     """Delete a dataset."""
-    if backend not in ["soprano", "chatterbox"]:
-        raise HTTPException(status_code=400, detail="Backend must be 'soprano' or 'chatterbox'")
-    
-    dataset_path = os.path.join(DATASETS_DIR, backend, name)
-    if not os.path.exists(dataset_path):
+    dataset_path = find_dataset_path(name)
+    if not dataset_path:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     import shutil

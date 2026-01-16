@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import soundfile as sf
 import numpy as np
@@ -37,6 +38,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Soprano TTS Server", version="1.0.0")
+
+# Enable CORS for UI model switching
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Server configuration from environment
 SOPRANO_DEVICE = os.getenv("SOPRANO_DEVICE", "auto")
@@ -175,8 +185,12 @@ class SopranoModel:
                 model_attrs = [a for a in dir(self.model) if not a.startswith('_') and not callable(getattr(self.model, a, None))]
                 logger.info(f"Model attributes: {model_attrs[:20]}")  # First 20 to avoid spam
             
-            logger.info(f"Soprano loaded: device={device}, backend={SOPRANO_BACKEND}, "
-                       f"cache={SOPRANO_CACHE_MB}MB, batch={SOPRANO_DECODER_BATCH}, sr={self.sample_rate}")
+            if self.model_path:
+                logger.info(f"Soprano loaded CUSTOM model '{self.model_name}': device={device}, backend={SOPRANO_BACKEND}, "
+                           f"cache={SOPRANO_CACHE_MB}MB, batch={SOPRANO_DECODER_BATCH}, sr={self.sample_rate}")
+            else:
+                logger.info(f"Soprano loaded DEFAULT model: device={device}, backend={SOPRANO_BACKEND}, "
+                           f"cache={SOPRANO_CACHE_MB}MB, batch={SOPRANO_DECODER_BATCH}, sr={self.sample_rate}")
             
             return self.model
     
@@ -599,9 +613,11 @@ async def list_models():
 @app.post("/v1/models/switch")
 async def switch_model(model_name: str = "default"):
     """Switch to a different Soprano model."""
+    logger.info(f"=== MODEL SWITCH REQUEST: '{model_name}' ===")
+    
     if model_name == "default":
         SOPRANO.set_model(model_path=None, model_name="default")
-        logger.info("Switching to default Soprano model")
+        logger.info("Switched to default Soprano model")
         return {"success": True, "model": "default", "message": "Switched to default model"}
     
     # Check custom models

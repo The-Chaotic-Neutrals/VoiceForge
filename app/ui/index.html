@@ -150,20 +150,36 @@
                         <div class="input-hint">Custom models trained in the Training tab will appear here</div>
                     </div>
 
-                    <div class="form-group" id="soprano-settings" style="display: none;">
-                        <label class="label-with-help">
-                            Soprano Sampling
-                            <span class="help-icon" title="Soprano sampling settings. Higher temperature = more varied output. Lower = more consistent. Repetition penalty helps avoid loops.">?</span>
-                        </label>
-                        <div class="form-row" style="align-items: center; gap: 10px;">
-                            <label for="soprano-temperature" style="min-width: 90px;">Temperature</label>
-                            <input type="number" id="soprano-temperature" value="0.7" min="0.01" max="2" step="0.01" aria-label="Soprano temperature">
-                            <label for="soprano-top-p" style="min-width: 60px;">Top P</label>
-                            <input type="number" id="soprano-top-p" value="0.95" min="0.01" max="1" step="0.01" aria-label="Soprano top p">
-                            <label for="soprano-repetition-penalty" style="min-width: 130px;">Repetition</label>
-                            <input type="number" id="soprano-repetition-penalty" value="1.2" min="0.8" max="2" step="0.05" aria-label="Soprano repetition penalty">
+                    <div id="soprano-settings" style="display: none;">
+                        <div class="form-group">
+                            <label for="soprano-model" class="label-with-help">
+                                Soprano Model
+                                <span class="help-icon" title="Select which Soprano model to use. 'Default' uses the base pretrained model. Custom models are trained via the Training tab.">?</span>
+                            </label>
+                            <div class="form-row" style="gap: 8px; align-items: center;">
+                                <select id="soprano-model" aria-label="Soprano model" style="flex: 1;">
+                                    <option value="">Default (Base Model)</option>
+                                </select>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="refreshSopranoModels()" title="Refresh model list">↻</button>
+                            </div>
+                            <div class="input-hint">Custom models trained in the Training tab will appear here</div>
                         </div>
-                        <div class="input-hint">Soprano uses a fixed voice (no cloning). Lower temp (0.3) = consistent, higher (0.7+) = varied</div>
+                        
+                        <div class="form-group">
+                            <label class="label-with-help">
+                                Soprano Sampling
+                                <span class="help-icon" title="Soprano sampling settings. Higher temperature = more varied output. Lower = more consistent. Repetition penalty helps avoid loops.">?</span>
+                            </label>
+                            <div class="form-row" style="align-items: center; gap: 10px;">
+                                <label for="soprano-temperature" style="min-width: 90px;">Temperature</label>
+                                <input type="number" id="soprano-temperature" value="0.7" min="0.01" max="2" step="0.01" aria-label="Soprano temperature">
+                                <label for="soprano-top-p" style="min-width: 60px;">Top P</label>
+                                <input type="number" id="soprano-top-p" value="0.95" min="0.01" max="1" step="0.01" aria-label="Soprano top p">
+                                <label for="soprano-repetition-penalty" style="min-width: 130px;">Repetition</label>
+                                <input type="number" id="soprano-repetition-penalty" value="1.2" min="0.8" max="2" step="0.05" aria-label="Soprano repetition penalty">
+                            </div>
+                            <div class="input-hint">Soprano uses a fixed voice (no cloning). Lower temp (0.3) = consistent, higher (0.7+) = varied</div>
+                        </div>
                     </div>
                     
                     <div class="form-group">
@@ -1627,6 +1643,7 @@
             const text = document.getElementById('text-input')?.value.trim() || '';
             const ttsBackend = getElementValue('tts-backend') || 'chatterbox';
             const chatterboxModel = ttsBackend === 'chatterbox' ? (getElementValue('chatterbox-model') || null) : null;
+            const sopranoModel = ttsBackend === 'soprano' ? (getElementValue('soprano-model') || null) : null;
             return {
                 input: text,
                 rvc_model: getElementChecked('enable-rvc') ? getElementValue('model-select') : null,
@@ -1636,6 +1653,7 @@
                 tts_mode: getElementValue('tts-mode') || 'chunked',
                 tts_backend: ttsBackend,
                 chatterbox_model: chatterboxModel,
+                soprano_model: sopranoModel,
                 tts_batch_tokens: parseInt(getElementValue('tts-batch-tokens')) || 50,
                 tts_token_method: document.querySelector('input[name="token-method"]:checked')?.value || 'tiktoken',
                 pitch_algo: getElementValue('pitch-algo') || 'rmvpe+',
@@ -2079,13 +2097,79 @@
                 }
             }
         }
+        
+        async function refreshSopranoModels() {
+            const select = document.getElementById('soprano-model');
+            if (!select) return;
+            
+            // Keep current selection
+            const currentValue = select.value;
+            
+            // Clear existing options except default
+            select.innerHTML = '<option value="">Default (Base Model)</option>';
+            
+            let sopranoModels = [];
+            
+            // Try training server first
+            try {
+                const res = await fetch(`${TRAINING_SERVER_URL}/v1/models`);
+                if (res.ok) {
+                    const data = await res.json();
+                    sopranoModels = data.soprano || [];
+                }
+            } catch (e) {
+                console.log('Training server not available, trying Soprano server...');
+            }
+            
+            // Fallback to Soprano server if no models found
+            if (sopranoModels.length === 0) {
+                try {
+                    const res = await fetch(`${SOPRANO_URL}/v1/models`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        // Soprano server returns models in a different format
+                        const customModels = (data.models || []).filter(m => m.type === 'custom' && m.valid);
+                        sopranoModels = customModels.map(m => ({
+                            name: m.name,
+                            path: m.path
+                        }));
+                    }
+                } catch (e) {
+                    console.log('Could not fetch models from Soprano server:', e);
+                }
+            }
+            
+            // Add models to dropdown
+            if (sopranoModels.length > 0) {
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = 'Custom Trained Models';
+                
+                sopranoModels.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.name;
+                    option.textContent = model.name;
+                    optgroup.appendChild(option);
+                });
+                
+                select.appendChild(optgroup);
+            }
+            
+            // Restore selection if still valid
+            if (currentValue) {
+                const options = Array.from(select.options);
+                if (options.some(o => o.value === currentValue)) {
+                    select.value = currentValue;
+                }
+            }
+        }
 
         const ttsBackendSelect = document.getElementById('tts-backend');
         if (ttsBackendSelect) {
             ttsBackendSelect.addEventListener('change', updateTTSBackendVisibility);
         }
         updateTTSBackendVisibility();
-        refreshChatterboxModels(); // Load custom models on page init
+        refreshChatterboxModels(); // Load custom Chatterbox models on page init
+        refreshSopranoModels(); // Load custom Soprano models on page init
         
         // Auto-save on changes
         document.addEventListener('change', (e) => {
@@ -2478,6 +2562,27 @@
                 // Ensure default model is loaded
                 try {
                     await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=default`, {
+                        method: 'POST'
+                    });
+                } catch (e) {
+                    // Ignore - default is probably already loaded
+                }
+            }
+            
+            // Switch Soprano model if needed
+            if (ttsBackend === 'soprano' && params.soprano_model) {
+                statusEl.textContent = 'Switching to custom model...';
+                try {
+                    await fetch(`${SOPRANO_URL}/v1/models/switch?model_name=${encodeURIComponent(params.soprano_model)}`, {
+                        method: 'POST'
+                    });
+                } catch (e) {
+                    console.warn('Model switch failed, using current model:', e);
+                }
+            } else if (ttsBackend === 'soprano' && !params.soprano_model) {
+                // Ensure default model is loaded
+                try {
+                    await fetch(`${SOPRANO_URL}/v1/models/switch?model_name=default`, {
                         method: 'POST'
                     });
                 } catch (e) {
@@ -5169,6 +5274,7 @@
         
         const TRAINING_SERVER_URL = 'http://127.0.0.1:8895';
         const CHATTERBOX_URL = 'http://127.0.0.1:8893';
+        const SOPRANO_URL = 'http://127.0.0.1:8894';
         let trainingWebSocket = null;
         let currentTrainingJobId = null;
         let trainingPollInterval = null;
@@ -5367,15 +5473,19 @@
         // Load available datasets
         async function loadDatasets() {
             try {
+                console.log('[loadDatasets] Fetching from:', `${TRAINING_SERVER_URL}/v1/datasets`);
                 const res = await fetch(`${TRAINING_SERVER_URL}/v1/datasets`);
                 const data = await res.json();
+                console.log('[loadDatasets] Response:', data);
                 
                 const backend = document.getElementById('training-backend').value;
+                console.log('[loadDatasets] Backend:', backend);
                 const select = document.getElementById('training-dataset-select');
                 
                 select.innerHTML = '<option value="">-- Select dataset --</option>';
                 
                 const datasets = data[backend] || [];
+                console.log('[loadDatasets] Datasets for backend:', datasets);
                 datasets.forEach(ds => {
                     const opt = document.createElement('option');
                     opt.value = ds.path;
@@ -6039,6 +6149,7 @@
         function initTrainingTab() {
             updateTrainingUI();
             refreshTrainedModels();
+            loadDatasets(); // Load available datasets
         }
         
         // Call init when Training tab is shown
