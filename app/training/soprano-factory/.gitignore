@@ -1,11 +1,6 @@
 __pycache__/
 test.py
-*.wav
+*.json
+*.pth
 dist/
 *.egg-info/
-.venv/
-.task/
-BACKEND-SELECTION.md
-Taskfile.yml
-benchmark.py
-examples-backend.py

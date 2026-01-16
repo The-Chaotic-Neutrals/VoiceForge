@@ -83,15 +83,15 @@ if errorlevel 1 (
     echo [WARN] Could not verify CUDA availability
 )
 
-:: Clone or update Soprano-Factory repository
+:: Clone or update Soprano-Factory repository (TRAINING repo, not inference)
 if exist "%SOPRANO_FACTORY_DIR%\.git" (
     echo [INFO] Updating Soprano-Factory repository...
     cd /d "%SOPRANO_FACTORY_DIR%"
     git pull
 ) else (
-    echo [INFO] Cloning Soprano-Factory repository...
+    echo [INFO] Cloning Soprano-Factory training repository...
     if exist "%SOPRANO_FACTORY_DIR%" rd /s /q "%SOPRANO_FACTORY_DIR%"
-    git clone https://github.com/ekwek1/soprano.git "%SOPRANO_FACTORY_DIR%"
+    git clone https://github.com/ekwek1/soprano-factory.git "%SOPRANO_FACTORY_DIR%"
 )
 
 if not exist "%SOPRANO_FACTORY_DIR%" (
@@ -99,22 +99,29 @@ if not exist "%SOPRANO_FACTORY_DIR%" (
     exit /b 1
 )
 
-:: Install Soprano with training dependencies
+:: Install Soprano-Factory training requirements
 cd /d "%SOPRANO_FACTORY_DIR%"
-echo [INFO] Installing Soprano with training dependencies...
-python -m pip install -e .[lmdeploy]
+echo [INFO] Installing Soprano-Factory training dependencies...
+python -m pip install -r requirements.txt
 
-:: Install additional training dependencies
-echo [INFO] Installing additional training dependencies...
-python -m pip install accelerate datasets transformers safetensors tensorboard
+:: Also install soprano inference library for loading trained models
+echo [INFO] Installing soprano-tts for inference...
+python -m pip install soprano-tts
 
 :: Verify installation
 echo [INFO] Verifying Soprano-Factory installation...
-python -c "from soprano import SopranoTTS; print('Soprano-Factory OK')"
+python -c "import torch; from transformers import AutoModelForCausalLM; print('Soprano-Factory dependencies OK')"
 if errorlevel 1 (
-    echo [ERROR] Soprano import failed!
+    echo [ERROR] Soprano-Factory dependencies check failed!
     exit /b 1
 )
+
+:: Check train.py exists
+if not exist "%SOPRANO_FACTORY_DIR%\train.py" (
+    echo [ERROR] train.py not found - wrong repository was cloned!
+    exit /b 1
+)
+echo [INFO] train.py found - correct repository!
 
 echo.
 echo [INFO] Soprano-Factory training environment setup complete!

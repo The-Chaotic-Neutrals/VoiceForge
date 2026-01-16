@@ -582,7 +582,9 @@ async def list_models():
             "name": "default",
             "type": "default",
             "path": None,
-            "description": "Default Soprano-1.1-80M model from HuggingFace"
+            "description": "Default Soprano-1.1-80M model from HuggingFace",
+            "valid": True,
+            "error": None
         }
     ]
     
@@ -595,19 +597,55 @@ async def list_models():
                 has_safetensors = any(f.endswith('.safetensors') for f in os.listdir(model_path))
                 has_config = os.path.exists(os.path.join(model_path, 'config.json'))
                 
+                # Full validation
+                is_valid, error_msg = _validate_custom_model(model_path)
+                
                 models.append({
                     "name": name,
                     "type": "custom",
                     "path": model_path,
                     "has_safetensors": has_safetensors,
                     "has_config": has_config,
-                    "valid": has_safetensors  # Basic validity check
+                    "valid": is_valid,
+                    "error": error_msg if not is_valid else None
                 })
     
     return {
         "models": models,
         "current": SOPRANO.model_name
     }
+
+
+def _validate_custom_model(model_path: str) -> tuple[bool, str]:
+    """
+    Validate that a custom model directory contains required files.
+    
+    Returns (is_valid, error_message).
+    """
+    if not os.path.isdir(model_path):
+        return False, "Path is not a directory"
+    
+    # Check for config.json
+    config_path = os.path.join(model_path, "config.json")
+    if not os.path.exists(config_path):
+        return False, "Missing config.json - model has not been trained or saved correctly"
+    
+    # Check config.json has model_type
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        if "model_type" not in config:
+            return False, "config.json is missing 'model_type' key - model was not saved correctly"
+    except (json.JSONDecodeError, IOError) as e:
+        return False, f"Cannot read config.json: {e}"
+    
+    # Check for model weights
+    has_safetensors = any(f.endswith('.safetensors') for f in os.listdir(model_path))
+    has_bin = any(f.endswith('.bin') and 'pytorch_model' in f for f in os.listdir(model_path))
+    if not has_safetensors and not has_bin:
+        return False, "Missing model weights (.safetensors or pytorch_model.bin) - model has not been trained yet"
+    
+    return True, ""
 
 
 @app.post("/v1/models/switch")
@@ -624,6 +662,16 @@ async def switch_model(model_name: str = "default"):
     model_path = os.path.join(_CUSTOM_MODELS_DIR, model_name)
     if not os.path.exists(model_path):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
+    
+    # Validate model has required files
+    is_valid, error_msg = _validate_custom_model(model_path)
+    if not is_valid:
+        logger.error(f"Custom model '{model_name}' is invalid: {error_msg}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Model '{model_name}' is not a valid Soprano model: {error_msg}. "
+                   f"Please train the model first or ensure the model files are correctly saved."
+        )
     
     SOPRANO.set_model(model_path=model_path, model_name=model_name)
     logger.info(f"Switching to custom model: {model_name}")

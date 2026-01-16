@@ -318,62 +318,128 @@ async def run_training_process(job: TrainingJob):
 
 
 async def run_soprano_training(job: TrainingJob):
-    """Run Soprano-Factory training."""
+    """Run Soprano-Factory training using the real train.py from ekwek1/soprano-factory."""
     config = job.config
     env_name = "soprano_train"
     factory_dir = os.path.join(TRAINING_DIR, "soprano-factory")
     
-    if not os.path.exists(factory_dir):
-        raise FileNotFoundError(f"Soprano-Factory not found at {factory_dir}. Run install_soprano_train.bat first.")
+    # Check for the REAL soprano-factory (has train.py), not the inference library
+    train_script_path = os.path.join(factory_dir, "train.py")
+    generate_script_path = os.path.join(factory_dir, "generate_dataset.py")
     
-    # Build training command
-    # Note: Actual command depends on soprano-factory's CLI - adjust as needed
+    if not os.path.exists(train_script_path):
+        raise FileNotFoundError(
+            f"Soprano-Factory train.py not found at {factory_dir}. "
+            f"The wrong repository may have been cloned. "
+            f"Please delete {factory_dir} and run install_soprano_train.bat again to clone "
+            f"https://github.com/ekwek1/soprano-factory (not ekwek1/soprano)."
+        )
+    
+    if not os.path.exists(generate_script_path):
+        raise FileNotFoundError(
+            f"Soprano-Factory generate_dataset.py not found at {factory_dir}. "
+            f"Please ensure the correct repository (ekwek1/soprano-factory) is cloned."
+        )
+    
     output_dir = os.path.join(SOPRANO_CUSTOM_DIR, config["model_name"])
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create a training script for soprano
-    train_script = f'''
-import sys
-sys.path.insert(0, r"{factory_dir}")
-from soprano import SopranoTTS
-import os
-
-# Training configuration
-config = {{
-    "dataset_path": r"{config['dataset_path']}",
-    "output_dir": r"{output_dir}",
-    "epochs": {config.get('epochs', 100)},
-    "learning_rate": {config.get('learning_rate', 1e-4)},
-    "batch_size": {config.get('batch_size', 4)},
-    "save_every": {config.get('save_every', 10)},
-    "warmup_steps": {config.get('warmup_steps', 100)},
-    "gradient_accumulation": {config.get('gradient_accumulation', 1)},
-}}
-
-print(f"[INFO] Soprano training started")
-print(f"[INFO] Dataset: {{config['dataset_path']}}")
-print(f"[INFO] Output: {{config['output_dir']}}")
-print(f"[INFO] Epochs: {{config['epochs']}}")
-
-# TODO: Replace with actual soprano-factory training API when available
-# For now, simulate training progress
-import time
-for epoch in range(1, config['epochs'] + 1):
-    # Simulate epoch
-    loss = 0.1 / epoch + 0.001 * (epoch % 10)
-    print(f"Epoch: {{epoch}}/{{config['epochs']}} - Loss: {{loss:.4f}} - LR: {{config['learning_rate']}}")
-    time.sleep(0.1)  # Simulated training time
+    dataset_path = config["dataset_path"]
     
-    if epoch % config['save_every'] == 0:
-        print(f"[INFO] Checkpoint saved at epoch {{epoch}}")
+    # Soprano-Factory expects metadata.txt but our datasets use metadata.csv (LJSpeech format)
+    # Check and convert if necessary
+    metadata_txt = os.path.join(dataset_path, "metadata.txt")
+    metadata_csv = os.path.join(dataset_path, "metadata.csv")
+    
+    convert_metadata_code = ""
+    if not os.path.exists(metadata_txt) and os.path.exists(metadata_csv):
+        # Need to convert metadata.csv to metadata.txt
+        convert_metadata_code = f'''
+# Convert metadata.csv to metadata.txt (soprano-factory expects .txt)
+print("[INFO] Converting metadata.csv to metadata.txt...")
+csv_path = r"{metadata_csv}"
+txt_path = r"{metadata_txt}"
+with open(csv_path, 'r', encoding='utf-8') as f_in:
+    with open(txt_path, 'w', encoding='utf-8') as f_out:
+        for line in f_in:
+            # LJSpeech CSV format: id|text|normalized_text
+            # Soprano-Factory format: id|text
+            parts = line.strip().split('|')
+            if len(parts) >= 2:
+                # Use the normalized text (3rd column) if available, else raw text
+                text = parts[2] if len(parts) >= 3 else parts[1]
+                f_out.write(f"{{parts[0]}}|{{text}}\\n")
+print("[INFO] Metadata converted!")
+'''
+    
+    # Create a wrapper script that:
+    # 1. Converts metadata if needed
+    # 2. Runs generate_dataset.py to preprocess the dataset  
+    # 3. Runs train.py to train the model
+    # Note: We run them as subprocesses because train.py uses argparse at module level
+    train_wrapper = f'''
+import sys
+import os
+import subprocess
 
-print("[INFO] Training completed!")
-print(f"[INFO] Model saved to: {{config['output_dir']}}")
+factory_dir = r"{factory_dir}"
+dataset_path = r"{dataset_path}"
+output_dir = r"{output_dir}"
+
+print("[INFO] ========================================")
+print("[INFO] Soprano-Factory Training")
+print("[INFO] ========================================")
+print(f"[INFO] Dataset: {{dataset_path}}")
+print(f"[INFO] Output: {{output_dir}}")
+print()
+
+{convert_metadata_code}
+
+# Step 1: Preprocess dataset using generate_dataset.py
+print("[INFO] Step 1/2: Preprocessing dataset...")
+print("[INFO] Running generate_dataset.py...")
+
+result = subprocess.run(
+    [sys.executable, os.path.join(factory_dir, "generate_dataset.py"), 
+     "--input-dir", dataset_path],
+    cwd=factory_dir,
+    capture_output=False
+)
+
+if result.returncode != 0:
+    print(f"[ERROR] Dataset preprocessing failed with code {{result.returncode}}")
+    sys.exit(1)
+
+print("[INFO] Dataset preprocessing complete!")
+print()
+
+# Step 2: Run training using train.py
+print("[INFO] Step 2/2: Training model...")
+print("[INFO] Running train.py...")
+
+result = subprocess.run(
+    [sys.executable, os.path.join(factory_dir, "train.py"),
+     "--input-dir", dataset_path,
+     "--save-dir", output_dir],
+    cwd=factory_dir,
+    capture_output=False
+)
+
+if result.returncode != 0:
+    print(f"[ERROR] Training failed with code {{result.returncode}}")
+    sys.exit(1)
+
+print()
+print("[INFO] ========================================")
+print("[INFO] Soprano-Factory Training Complete!")
+print("[INFO] ========================================")
+print(f"[INFO] Your trained model is at: {{output_dir}}")
+print("[INFO] You can now use this model with the Soprano server by selecting it from the model list.")
 '''
     
     script_path = os.path.join(output_dir, "train_soprano.py")
     with open(script_path, "w") as f:
-        f.write(train_script)
+        f.write(train_wrapper)
     
     # Run training in conda environment
     await run_conda_script(job, env_name, script_path, "soprano")
