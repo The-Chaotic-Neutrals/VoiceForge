@@ -108,6 +108,10 @@ python -m pip install -r requirements.txt
 echo [INFO] Installing soprano-tts for inference...
 python -m pip install soprano-tts
 
+:: Install PEFT for LoRA fine-tuning (preserves base model hidden states)
+echo [INFO] Installing PEFT for LoRA fine-tuning...
+python -m pip install peft
+
 :: Verify installation
 echo [INFO] Verifying Soprano-Factory installation...
 python -c "import torch; from transformers import AutoModelForCausalLM; print('Soprano-Factory dependencies OK')"

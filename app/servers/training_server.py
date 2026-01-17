@@ -143,12 +143,19 @@ class SopranoTrainRequest(BaseModel):
     """Soprano-Factory training configuration."""
     model_name: str = Field(..., description="Name for the output model")
     dataset_path: str = Field(..., description="Path to dataset folder (LJSpeech format)")
-    epochs: int = Field(default=100, ge=1, le=1000)
-    learning_rate: float = Field(default=1e-4, ge=1e-6, le=1e-2)
+    epochs: int = Field(default=20, ge=1, le=1000)
+    # Learning rate - LoRA can use higher LR (5e-5), full fine-tune needs lower (2e-5)
+    learning_rate: float = Field(default=5e-5, ge=1e-6, le=1e-2)
     batch_size: int = Field(default=4, ge=1, le=32)
     save_every: int = Field(default=10, ge=1, description="Save checkpoint every N epochs")
     warmup_steps: int = Field(default=100, ge=0)
     gradient_accumulation: int = Field(default=1, ge=1, le=64)
+    # LoRA settings - HIGHLY RECOMMENDED for Soprano fine-tuning
+    # Full fine-tuning destroys hidden state distribution that decoder expects
+    use_lora: bool = Field(default=True, description="Use LoRA (recommended - preserves voice quality)")
+    lora_rank: int = Field(default=32, ge=4, le=256, description="LoRA rank (higher=more capacity)")
+    lora_alpha: int = Field(default=64, ge=4, le=512, description="LoRA alpha (usually 2x rank)")
+    lora_dropout: float = Field(default=0.05, ge=0.0, le=0.5, description="LoRA dropout")
 
 
 class ChatterboxTrainRequest(BaseModel):
@@ -251,9 +258,15 @@ def parse_training_output(line: str, backend: str) -> Optional[Dict[str, Any]]:
         if epoch_match.group(2):
             progress["total_epochs"] = int(epoch_match.group(2))
     
-    loss_match = re.search(r'[Ll]oss[:\s]+([\d.]+)', clean_line)
-    if loss_match and "loss" not in progress:  # Don't overwrite dict-parsed loss
-        progress["loss"] = float(loss_match.group(1))
+    # For Soprano: prefer audio loss over text loss (audio loss is what matters for TTS quality)
+    audio_loss_match = re.search(r'audio loss[:\s]+([\d.]+)', clean_line)
+    if audio_loss_match:
+        progress["loss"] = float(audio_loss_match.group(1))
+    elif "loss" not in progress:
+        # Generic loss fallback
+        loss_match = re.search(r'[Ll]oss[:\s]+([\d.]+)', clean_line)
+        if loss_match:
+            progress["loss"] = float(loss_match.group(1))
     
     lr_match = re.search(r'[Ll]r[:\s]+([\d.e-]+)', clean_line)
     if lr_match:
@@ -356,41 +369,157 @@ async def run_soprano_training(job: TrainingJob):
         # Need to convert metadata.csv to metadata.txt
         convert_metadata_code = f'''
 # Convert metadata.csv to metadata.txt (soprano-factory expects .txt)
+# Note: soprano-factory uses f.read().split('\\n') which creates empty string if file ends with newline
 print("[INFO] Converting metadata.csv to metadata.txt...")
 csv_path = r"{metadata_csv}"
 txt_path = r"{metadata_txt}"
+lines = []
 with open(csv_path, 'r', encoding='utf-8') as f_in:
-    with open(txt_path, 'w', encoding='utf-8') as f_out:
-        for line in f_in:
-            # LJSpeech CSV format: id|text|normalized_text
-            # Soprano-Factory format: id|text
-            parts = line.strip().split('|')
-            if len(parts) >= 2:
-                # Use the normalized text (3rd column) if available, else raw text
-                text = parts[2] if len(parts) >= 3 else parts[1]
-                f_out.write(f"{{parts[0]}}|{{text}}\\n")
-print("[INFO] Metadata converted!")
+    for line in f_in:
+        line = line.strip()
+        # Skip empty lines
+        if not line:
+            continue
+        # LJSpeech CSV format: id|text|normalized_text
+        # Soprano-Factory format: id|text
+        parts = line.split('|')
+        if len(parts) >= 2:
+            # Use the normalized text (3rd column) if available, else raw text
+            text = parts[2] if len(parts) >= 3 else parts[1]
+            lines.append(f"{{parts[0]}}|{{text}}")
+
+# Write without trailing newline to avoid empty string in split('\\n')
+with open(txt_path, 'w', encoding='utf-8') as f_out:
+    f_out.write('\\n'.join(lines))
+print(f"[INFO] Metadata converted! ({{len(lines)}} entries)")
 '''
+    
+    # Get user's hyperparameters from config
+    epochs = config.get("epochs", 20)
+    # LoRA can use higher learning rates (5e-5), full fine-tune needs lower (2e-5)
+    learning_rate = config.get("learning_rate", 5e-5)
+    batch_size = config.get("batch_size", 4)
+    gradient_accumulation = config.get("gradient_accumulation", 1)
+    warmup_steps = config.get("warmup_steps", 100)
+    save_every = config.get("save_every", 10)
+    
+    # LoRA settings - HIGHLY RECOMMENDED for Soprano
+    # Full fine-tuning destroys the hidden state distribution that the decoder expects
+    use_lora = config.get("use_lora", True)
+    lora_rank = config.get("lora_rank", 32)
+    lora_alpha = config.get("lora_alpha", 64)
+    lora_dropout = config.get("lora_dropout", 0.05)
+    
+    # PRE-CREATE the patched train.py OUTSIDE the f-string to avoid escaping hell
+    # Read original train.py and apply all patches here
+    original_train_py = os.path.join(factory_dir, "train.py")
+    with open(original_train_py, 'r', encoding='utf-8') as f:
+        patched_code = f.read()
+    
+    # Patch 1: Use correct model (Soprano-1.1-80M instead of Soprano-80M)
+    patched_code = patched_code.replace("'ekwek/Soprano-80M'", "'ekwek/Soprano-1.1-80M'")
+    patched_code = patched_code.replace('"ekwek/Soprano-80M"', '"ekwek/Soprano-1.1-80M"')
+    
+    # Patch 2: Add sys.path for imports
+    sys_path_insert = f'import sys; sys.path.insert(0, r"{factory_dir}")\n'
+    if patched_code.startswith('"""'):
+        end_docstring = patched_code.find('"""', 3) + 3
+        patched_code = patched_code[:end_docstring] + '\n' + sys_path_insert + patched_code[end_docstring:]
+    else:
+        patched_code = sys_path_insert + patched_code
+    
+    # Patch 3: Hyperparameters
+    import re
+    patched_code = re.sub(r'^max_lr = .*$', f'max_lr = {learning_rate}', patched_code, flags=re.MULTILINE)
+    patched_code = re.sub(r'^batch_size = .*$', f'batch_size = {batch_size}', patched_code, flags=re.MULTILINE)
+    patched_code = re.sub(r'^grad_accum_steps = .*$', f'grad_accum_steps = {gradient_accumulation}', patched_code, flags=re.MULTILINE)
+    
+    # Patch 4: LoRA support
+    if use_lora:
+        # Add LoRA import
+        patched_code = patched_code.replace(
+            "from transformers import AutoModelForCausalLM, AutoTokenizer",
+            "from transformers import AutoModelForCausalLM, AutoTokenizer\nfrom peft import LoraConfig, get_peft_model, TaskType"
+        )
+        
+        # Add LoRA setup after model.train() in main block (not in evaluate())
+        lora_setup = f'''
+    # Apply LoRA - preserves base model hidden state distribution
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r={lora_rank},
+        lora_alpha={lora_alpha},
+        lora_dropout={lora_dropout},
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        bias="none",
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+
+'''
+        patched_code = patched_code.replace(
+            "model.train()\n\n    # dataset",
+            "model.train()" + lora_setup + "    # dataset"
+        )
+        
+        # Add LoRA merge before save
+        lora_merge = '''
+    # Merge LoRA weights into base model
+    print("Merging LoRA weights...")
+    model = model.merge_and_unload()
+    print("LoRA merged!")
+'''
+        patched_code = patched_code.replace(
+            "model.save_pretrained(save_path)",
+            lora_merge + "    model.save_pretrained(save_path)"
+        )
+    
+    # Write patched train.py to output directory
+    patched_train_path = os.path.join(output_dir, "train_patched.py")
+    with open(patched_train_path, 'w', encoding='utf-8') as f:
+        f.write(patched_code)
     
     # Create a wrapper script that:
     # 1. Converts metadata if needed
     # 2. Runs generate_dataset.py to preprocess the dataset  
-    # 3. Runs train.py to train the model
-    # Note: We run them as subprocesses because train.py uses argparse at module level
+    # 3. Patches train.py hyperparameters with user settings
+    # 4. Runs train.py to train the model
     train_wrapper = f'''
 import sys
 import os
 import subprocess
+import json
+import math
 
 factory_dir = r"{factory_dir}"
 dataset_path = r"{dataset_path}"
 output_dir = r"{output_dir}"
 
+# User's hyperparameters
+user_epochs = {epochs}
+user_lr = {learning_rate}
+user_batch_size = {batch_size}
+user_grad_accum = {gradient_accumulation}
+user_warmup_steps = {warmup_steps}
+user_save_every = {save_every}
+
+# LoRA settings
+use_lora = {use_lora}
+lora_rank = {lora_rank}
+lora_alpha = {lora_alpha}
+lora_dropout = {lora_dropout}
+
 print("[INFO] ========================================")
-print("[INFO] Soprano-Factory Training")
+print("[INFO] Soprano-Factory Training" + (" (LoRA)" if use_lora else " (Full)"))
 print("[INFO] ========================================")
 print(f"[INFO] Dataset: {{dataset_path}}")
 print(f"[INFO] Output: {{output_dir}}")
+print(f"[INFO] Epochs: {{user_epochs}}")
+print(f"[INFO] Learning Rate: {{user_lr}}")
+print(f"[INFO] Batch Size: {{user_batch_size}}")
+print(f"[INFO] Gradient Accumulation: {{user_grad_accum}}")
+if use_lora:
+    print(f"[INFO] LoRA Rank: {{lora_rank}}, Alpha: {{lora_alpha}}, Dropout: {{lora_dropout}}")
 print()
 
 {convert_metadata_code}
@@ -413,12 +542,59 @@ if result.returncode != 0:
 print("[INFO] Dataset preprocessing complete!")
 print()
 
-# Step 2: Run training using train.py
+# Count training samples to calculate max_steps
+train_json = os.path.join(dataset_path, "train.json")
+with open(train_json, 'r', encoding='utf-8') as f:
+    train_data = json.load(f)
+num_samples = len(train_data)
+
+# Calculate max_steps based on epochs
+# Simple: steps_per_epoch = ceil(samples / batch_size)
+# With gradient accumulation: effective_batch = batch_size * grad_accum
+effective_batch = user_batch_size * user_grad_accum
+steps_per_epoch = (num_samples + effective_batch - 1) // effective_batch  # ceiling division
+max_steps = steps_per_epoch * user_epochs
+
+# Minimum of 10 steps to avoid errors, but otherwise respect user's epoch setting
+max_steps = max(10, max_steps)
+
+# Warmup ratio - user's warmup_steps as fraction of total, capped at 10%
+warmup_ratio = min(0.1, user_warmup_steps / max(1, max_steps)) if max_steps > 0 else 0.05
+
+# Validation frequency - validate every save_every epochs worth of steps
+val_freq = max(1, steps_per_epoch * user_save_every)
+
+print(f"[INFO] Training samples: {{num_samples}}")
+print(f"[INFO] Steps per epoch: {{steps_per_epoch}}")
+print(f"[INFO] Total training steps: {{max_steps}} ({{user_epochs}} epochs)")
+print(f"[INFO] Validation every {{val_freq}} steps")
+print()
+
+# Step 2: Run training with pre-patched train.py
 print("[INFO] Step 2/2: Training model...")
-print("[INFO] Running train.py...")
+
+# The train_patched.py was pre-created with LoRA/model patches
+# We just need to patch the dynamic hyperparameters (max_steps, etc.)
+patched_train_py = os.path.join(output_dir, "train_patched.py")
+with open(patched_train_py, 'r', encoding='utf-8') as f:
+    train_code = f.read()
+
+import re
+# Patch dynamic hyperparameters that depend on dataset size
+train_code = re.sub(r'^max_steps = .*$', f'max_steps = {{max_steps}}', train_code, flags=re.MULTILINE)
+train_code = re.sub(r'^warmup_ratio = .*$', f'warmup_ratio = {{warmup_ratio}}', train_code, flags=re.MULTILINE)
+train_code = re.sub(r'^val_freq = .*$', f'val_freq = {{val_freq}}', train_code, flags=re.MULTILINE)
+
+with open(patched_train_py, 'w', encoding='utf-8') as f:
+    f.write(train_code)
+
+if use_lora:
+    print(f"[INFO] LoRA enabled (rank={{lora_rank}}, alpha={{lora_alpha}})")
+print(f"[INFO] Running training script: {{patched_train_py}}")
+print("[INFO] Running training...")
 
 result = subprocess.run(
-    [sys.executable, os.path.join(factory_dir, "train.py"),
+    [sys.executable, patched_train_py,
      "--input-dir", dataset_path,
      "--save-dir", output_dir],
     cwd=factory_dir,
@@ -434,6 +610,47 @@ print("[INFO] ========================================")
 print("[INFO] Soprano-Factory Training Complete!")
 print("[INFO] ========================================")
 print(f"[INFO] Your trained model is at: {{output_dir}}")
+
+# Copy required files from base Soprano model (required for inference)
+# soprano-factory's save_pretrained() may save incorrect config values
+import shutil
+base_model_dir = os.path.join(os.path.dirname(factory_dir), "models", "soprano")
+
+# First, fix config.json - the training may have saved wrong max_position_embeddings
+base_config = os.path.join(base_model_dir, "config.json")
+if os.path.exists(base_config):
+    custom_config = os.path.join(output_dir, "config.json")
+    shutil.copy2(base_config, custom_config)
+    print(f"[INFO] Copied correct config.json from base model (fixes max_position_embeddings)")
+# Also check HuggingFace cache
+hf_cache_dir = os.path.join(factory_dir, "..", "models", "soprano", "hub", "models--ekwek--Soprano-1.1-80M", "snapshots")
+
+decoder_copied = False
+
+# Try to find decoder.pth from various locations
+decoder_sources = [
+    os.path.join(base_model_dir, "decoder.pth"),
+    os.path.join(os.path.dirname(factory_dir), "..", "models", "soprano", "decoder.pth"),
+]
+
+# Add HF cache snapshots if they exist
+if os.path.exists(hf_cache_dir):
+    for snapshot in os.listdir(hf_cache_dir):
+        decoder_sources.append(os.path.join(hf_cache_dir, snapshot, "decoder.pth"))
+
+for decoder_src in decoder_sources:
+    if os.path.exists(decoder_src):
+        decoder_dst = os.path.join(output_dir, "decoder.pth")
+        if not os.path.exists(decoder_dst):
+            shutil.copy2(decoder_src, decoder_dst)
+            print(f"[INFO] Copied decoder.pth from {{decoder_src}}")
+        decoder_copied = True
+        break
+
+if not decoder_copied:
+    print("[WARN] Could not find decoder.pth - you may need to copy it manually from the base Soprano model")
+    print("[WARN] The custom model may not work for inference without decoder.pth")
+
 print("[INFO] You can now use this model with the Soprano server by selecting it from the model list.")
 '''
     
@@ -648,38 +865,107 @@ async def run_conda_script(job: TrainingJob, env_name: str, script_path: str, ba
     job.process = process
     
     # Stream output asynchronously
+    # tqdm uses \r (carriage return) to update progress in-place, not \n
+    # So we read raw bytes and split on both \r and \n
+    buffer = b""
+    last_progress_time = 0
     try:
         while True:
             if job.status == JobStatus.CANCELLED:
                 process.terminate()
                 break
             
-            line = await process.stdout.readline()
-            if not line:
-                break
-            
-            line = line.decode('utf-8', errors='replace').strip()
-            if not line:
+            # Read available data with timeout (don't block forever waiting for \n)
+            try:
+                chunk = await asyncio.wait_for(process.stdout.read(4096), timeout=0.5)
+            except asyncio.TimeoutError:
+                # Process buffer if we have data but no newline yet
+                if buffer:
+                    line = buffer.decode('utf-8', errors='replace').strip()
+                    buffer = b""
+                    if line:
+                        # Only log periodically to avoid spam
+                        now = time.time()
+                        if now - last_progress_time > 2.0:  # At most every 2 seconds
+                            last_progress_time = now
+                            log_line = line[:500] + "..." if len(line) > 500 else line
+                            logger.info(f"[{job.job_id}] {log_line}")
+                            
+                            # Parse progress
+                            progress = parse_training_output(line, backend)
+                            if progress:
+                                job.progress.update(progress)
+                                logger.info(f"[{job.job_id}] Progress update: {job.progress}")
+                                await broadcast_progress(job.job_id, {
+                                    "type": "progress",
+                                    "backend": backend,
+                                    **job.progress
+                                })
                 continue
             
-            logger.info(f"[{job.job_id}] {line}")
+            if not chunk:
+                # EOF - process remaining buffer
+                if buffer:
+                    line = buffer.decode('utf-8', errors='replace').strip()
+                    if line:
+                        log_line = line[:500] + "..." if len(line) > 500 else line
+                        logger.info(f"[{job.job_id}] {log_line}")
+                        progress = parse_training_output(line, backend)
+                        if progress:
+                            job.progress.update(progress)
+                            await broadcast_progress(job.job_id, {
+                                "type": "progress",
+                                "backend": backend,
+                                **job.progress
+                            })
+                break
             
-            # Parse progress
-            progress = parse_training_output(line, backend)
-            if progress:
-                job.progress.update(progress)
-                logger.info(f"[{job.job_id}] Progress update: {job.progress}")
+            buffer += chunk
+            
+            # Split on both \r and \n (tqdm uses \r for in-place updates)
+            while b'\r' in buffer or b'\n' in buffer:
+                # Find the first separator
+                r_idx = buffer.find(b'\r')
+                n_idx = buffer.find(b'\n')
+                
+                if r_idx == -1:
+                    sep_idx = n_idx
+                elif n_idx == -1:
+                    sep_idx = r_idx
+                else:
+                    sep_idx = min(r_idx, n_idx)
+                
+                line_bytes = buffer[:sep_idx]
+                # Skip the separator (and handle \r\n as single separator)
+                if sep_idx + 1 < len(buffer) and buffer[sep_idx:sep_idx+2] == b'\r\n':
+                    buffer = buffer[sep_idx+2:]
+                else:
+                    buffer = buffer[sep_idx+1:]
+                
+                line = line_bytes.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
+                
+                # Truncate very long lines for logging
+                log_line = line[:500] + "..." if len(line) > 500 else line
+                logger.info(f"[{job.job_id}] {log_line}")
+                
+                # Parse progress
+                progress = parse_training_output(line, backend)
+                if progress:
+                    job.progress.update(progress)
+                    logger.info(f"[{job.job_id}] Progress update: {job.progress}")
+                    await broadcast_progress(job.job_id, {
+                        "type": "progress",
+                        "backend": backend,
+                        **job.progress
+                    })
+                
+                # Also broadcast raw log (truncated for WebSocket)
                 await broadcast_progress(job.job_id, {
-                    "type": "progress",
-                    "backend": backend,
-                    **job.progress
+                    "type": "log",
+                    "message": log_line
                 })
-            
-            # Also broadcast raw log
-            await broadcast_progress(job.job_id, {
-                "type": "log",
-                "message": line
-            })
         
         await process.wait()
         

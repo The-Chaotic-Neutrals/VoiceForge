@@ -40,3 +40,5 @@ app/config/config.json
 /app/training/chatterbox-finetuning/pretrained_models
 /app/training/chatterbox-finetuning/src/chatterbox_/models/s3gen
 app/training/chatterbox-finetuning/src/config.py
+/app/datasets/Soft
+/app/models/soprano_custom/Soft

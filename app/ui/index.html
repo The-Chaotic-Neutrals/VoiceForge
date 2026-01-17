@@ -1320,11 +1320,12 @@
                     <div class="form-row" style="gap: 20px;">
                         <div class="form-group" style="flex: 1;">
                             <label>Epochs</label>
-                            <input type="number" id="soprano-epochs" class="form-control" value="100" min="1" max="1000">
+                            <input type="number" id="soprano-epochs" class="form-control" value="20" min="1" max="1000">
                         </div>
                         <div class="form-group" style="flex: 1;">
                             <label>Learning Rate</label>
-                            <input type="number" id="soprano-lr" class="form-control" value="0.0001" min="0.000001" max="0.01" step="0.00001">
+                            <input type="text" id="soprano-lr" class="form-control" value="5e-5" placeholder="e.g. 1e-4, 5e-5">
+                            <div class="input-hint">Scientific notation (e.g. 5e-5 = 0.00005)</div>
                         </div>
                         <div class="form-group" style="flex: 1;">
                             <label>Batch Size</label>
@@ -1344,6 +1345,32 @@
                         <div class="form-group" style="flex: 1;">
                             <label>Gradient Accumulation</label>
                             <input type="number" id="soprano-grad-accum" class="form-control" value="1" min="1" max="64">
+                        </div>
+                    </div>
+                    
+                    <!-- LoRA Settings -->
+                    <div class="form-group" style="margin-top: 15px;">
+                        <label class="toggle-label">
+                            <input type="checkbox" id="soprano-use-lora" checked>
+                            <span>Use LoRA (Recommended)</span>
+                            <span class="help-icon" title="LoRA preserves voice quality by only training ~2% of parameters. Highly recommended for fine-tuning.">?</span>
+                        </label>
+                    </div>
+                    
+                    <div class="form-row" style="gap: 20px;" id="soprano-lora-settings">
+                        <div class="form-group" style="flex: 1;">
+                            <label>LoRA Rank</label>
+                            <input type="number" id="soprano-lora-rank" class="form-control" value="32" min="4" max="256" step="4">
+                            <div class="input-hint">Higher = more capacity (16-64 typical)</div>
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>LoRA Alpha</label>
+                            <input type="number" id="soprano-lora-alpha" class="form-control" value="64" min="4" max="512" step="4">
+                            <div class="input-hint">Usually 2x rank</div>
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>LoRA Dropout</label>
+                            <input type="number" id="soprano-lora-dropout" class="form-control" value="0.05" min="0" max="0.5" step="0.01">
                         </div>
                     </div>
                 </div>
@@ -1376,7 +1403,8 @@
                         </div>
                         <div class="form-group" style="flex: 1;">
                             <label>Learning Rate</label>
-                            <input type="number" id="chatterbox-lr" class="form-control" value="0.00005" min="0.000001" max="0.01" step="0.000001">
+                            <input type="text" id="chatterbox-lr" class="form-control" value="5e-5" placeholder="e.g. 5e-5">
+                            <div class="input-hint">Scientific notation (e.g. 5e-5)</div>
                         </div>
                         <div class="form-group" style="flex: 1;">
                             <label>Batch Size</label>
@@ -5387,6 +5415,24 @@
             }
         }
         
+        // Toggle LoRA settings visibility
+        function toggleLoraSettings() {
+            const useLoraCheckbox = document.getElementById('soprano-use-lora');
+            const loraSettings = document.getElementById('soprano-lora-settings');
+            if (useLoraCheckbox && loraSettings) {
+                loraSettings.style.display = useLoraCheckbox.checked ? 'flex' : 'none';
+            }
+        }
+        
+        // Initialize LoRA toggle listener
+        document.addEventListener('DOMContentLoaded', () => {
+            const useLoraCheckbox = document.getElementById('soprano-use-lora');
+            if (useLoraCheckbox) {
+                useLoraCheckbox.addEventListener('change', toggleLoraSettings);
+                toggleLoraSettings(); // Set initial state
+            }
+        });
+        
         // Dataset mode toggle
         function setDatasetMode(mode) {
             const simpleBtn = document.getElementById('dataset-mode-simple');
@@ -6035,15 +6081,24 @@
             let requestBody;
             
             if (backend === 'soprano') {
+                // Parse learning rate - supports scientific notation (e.g. "5e-5", "1e-4")
+                const lrInput = document.getElementById('soprano-lr').value;
+                const learningRate = parseFloat(lrInput) || 5e-5;
+                
                 requestBody = {
                     model_name: document.getElementById('soprano-model-name').value || 'my_soprano_voice',
                     dataset_path: datasetPath,
-                    epochs: parseInt(document.getElementById('soprano-epochs').value) || 100,
-                    learning_rate: parseFloat(document.getElementById('soprano-lr').value) || 0.0001,
+                    epochs: parseInt(document.getElementById('soprano-epochs').value) || 20,
+                    learning_rate: learningRate,
                     batch_size: parseInt(document.getElementById('soprano-batch-size').value) || 4,
                     save_every: parseInt(document.getElementById('soprano-save-every').value) || 10,
                     warmup_steps: parseInt(document.getElementById('soprano-warmup').value) || 100,
-                    gradient_accumulation: parseInt(document.getElementById('soprano-grad-accum').value) || 1
+                    gradient_accumulation: parseInt(document.getElementById('soprano-grad-accum').value) || 1,
+                    // LoRA settings
+                    use_lora: document.getElementById('soprano-use-lora').checked,
+                    lora_rank: parseInt(document.getElementById('soprano-lora-rank').value) || 32,
+                    lora_alpha: parseInt(document.getElementById('soprano-lora-alpha').value) || 64,
+                    lora_dropout: parseFloat(document.getElementById('soprano-lora-dropout').value) || 0.05
                 };
             } else {
                 requestBody = {
@@ -6051,7 +6106,7 @@
                     dataset_path: datasetPath,
                     is_turbo: document.getElementById('chatterbox-turbo-mode').checked,
                     epochs: parseInt(document.getElementById('chatterbox-epochs').value) || 150,
-                    learning_rate: parseFloat(document.getElementById('chatterbox-lr').value) || 0.00005,
+                    learning_rate: parseFloat(document.getElementById('chatterbox-lr').value) || 5e-5,
                     batch_size: parseInt(document.getElementById('chatterbox-batch-size').value) || 4,
                     gradient_accumulation: parseInt(document.getElementById('chatterbox-grad-accum').value) || 8,
                     preprocess: document.getElementById('chatterbox-preprocess').checked,
