@@ -18,7 +18,7 @@ import soundfile as sf  # For debug logging
 
 from util.clients import (
     get_chatterbox_client,
-    get_soprano_client,
+    get_pocket_tts_client,
     run_rvc,
     run_rvc_stream,
     run_postprocess,
@@ -80,10 +80,11 @@ def _needs_resample(path: str, target_sr: int, volume: float) -> bool:
 
 
 def _get_tts_backend(request: TTSRequest) -> str:
-    backend = (getattr(request, "tts_backend", None) or "chatterbox").lower()
-    if backend not in ("chatterbox", "soprano"):
-        backend = "chatterbox"
-    return backend
+    """Get TTS backend from request. Supports chatterbox and pocket_tts."""
+    backend = getattr(request, 'tts_backend', 'chatterbox')
+    if backend in ('chatterbox', 'pocket_tts'):
+        return backend
+    return 'chatterbox'
 
 
 @dataclass
@@ -137,38 +138,48 @@ async def generate_audio(
         config = get_config()
         executor = get_executor()
         tts_backend = _get_tts_backend(request)
+        print(f"[{request_id}] Pipeline: tts_backend={tts_backend}, request.tts_backend={getattr(request, 'tts_backend', 'NOT SET')}")
         
         # Flags
         do_rvc = request.enable_rvc if request.enable_rvc is not None else is_rvc_enabled()
         do_post = request.enable_post if request.enable_post is not None else is_post_enabled()
         do_bg = request.enable_background if request.enable_background is not None else is_background_enabled()
         
-        # Resolve prompt audio (only for Chatterbox)
+        # Resolve prompt audio (for Chatterbox) or voice (for Pocket TTS)
         prompt = None
+        pocket_voice = None
         if tts_backend == "chatterbox":
             prompt = resolve_audio_path(request.chatterbox_prompt_audio)
             if not prompt or not os.path.exists(prompt or ""):
-                return AudioPipelineResult(success=False, error="Prompt audio required", temp_files=temp_files)
+                return AudioPipelineResult(success=False, error="Prompt audio required for Chatterbox", temp_files=temp_files)
+        elif tts_backend == "pocket_tts":
+            # Pocket TTS can use built-in voice names or file paths for cloning
+            pocket_voice = getattr(request, 'pocket_tts_voice', 'alba')
+            # If it looks like a path, try to resolve it
+            if pocket_voice and ('/' in pocket_voice or '\\' in pocket_voice or pocket_voice.endswith('.wav')):
+                resolved = resolve_audio_path(pocket_voice)
+                if resolved and os.path.exists(resolved):
+                    pocket_voice = resolved
         
         # === Step 1: TTS ===
         check()
-        status("Generating TTS...")
+        status(f"Generating TTS ({tts_backend})...")
         progress(0.1)
         
-        if tts_backend == "soprano":
-            soprano = get_soprano_client()
-            # Pass through request values - None values use soprano module defaults
+        if tts_backend == "pocket_tts":
+            print(f"[{request_id}] Using Pocket TTS with voice={pocket_voice}")
+            pocket_tts = get_pocket_tts_client()
+            print(f"[{request_id}] Pocket TTS client URL: {pocket_tts.server_url}")
             tts_path = await asyncio.get_event_loop().run_in_executor(
                 executor,
-                lambda: soprano.generate(
+                lambda: pocket_tts.generate(
                     text=request.input,
-                    temperature=request.soprano_temperature,
-                    top_p=request.soprano_top_p,
-                    repetition_penalty=request.soprano_repetition_penalty,
-                    request_id=request_id
+                    voice=pocket_voice,
+                    speed=getattr(request, 'speed', 1.0),
                 )
             )
-        else:
+            print(f"[{request_id}] Pocket TTS generated: {tts_path}")
+        else:  # chatterbox
             chatterbox = get_chatterbox_client()
             tts_path = await asyncio.get_event_loop().run_in_executor(
                 executor,
@@ -197,9 +208,8 @@ async def generate_audio(
         progress(0.5)
         
         # === Step 2.5: Normalize to Pipeline Sample Rate ===
-        # CRITICAL: Different TTS backends output different sample rates (Chatterbox=24kHz, Soprano=32kHz)
         # Post-processing effects (especially spatial audio) behave differently at different sample rates
-        # Normalizing here ensures IDENTICAL behavior regardless of TTS backend
+        # Normalizing here ensures consistent behavior
         check()
         if do_post and _needs_resample(current, PIPELINE_SAMPLE_RATE, 1.0):
             status("Normalizing sample rate...")
@@ -342,11 +352,19 @@ async def generate_audio_streaming(
         tts_backend = _get_tts_backend(request)
         
         prompt = None
+        pocket_voice = None
         if tts_backend == "chatterbox":
             prompt = resolve_audio_path(request.chatterbox_prompt_audio)
             if not prompt or not os.path.exists(prompt or ""):
                 yield {"type": "error", "message": "Prompt audio required"}
                 return
+        elif tts_backend == "pocket_tts":
+            # Pocket TTS can use built-in voice names or file paths for cloning
+            pocket_voice = getattr(request, 'pocket_tts_voice', 'alba')
+            if pocket_voice and ('/' in pocket_voice or '\\' in pocket_voice or pocket_voice.endswith('.wav')):
+                resolved = resolve_audio_path(pocket_voice)
+                if resolved and os.path.exists(resolved):
+                    pocket_voice = resolved
         
         # Gather background track info for client
         bg_tracks = []
@@ -367,8 +385,6 @@ async def generate_audio_streaming(
                                          "delay": float(t.get("delay", 0)), "fade_in": float(t.get("fade_in", 0)),
                                          "fade_out": float(t.get("fade_out", 0))})
         
-        chatterbox = get_chatterbox_client()
-        soprano = get_soprano_client()
         rvc_model = request.rvc_model or config.get("rvc_model", "Goddess_Nicole")
         post_params = request.get_post_params().to_dict() if do_post and request.get_post_params().needs_processing() else None
         output_vol = getattr(request, 'output_volume', 1.0)
@@ -380,27 +396,33 @@ async def generate_audio_streaming(
         save_output = getattr(request, "save_output", False)
         processed_chunk_paths = [] if save_output else None
 
-        # Both Chatterbox and Soprano use the same streaming infrastructure
         event_queue: asyncio.Queue = asyncio.Queue()
         stop_event = threading.Event()
         loop = asyncio.get_event_loop()
         
         def reader():
             try:
-                if tts_backend == "soprano":
-                    # Pass through request values - None values use soprano module defaults
-                    print(f"[{request_id}] Starting Soprano stream_events...")
-                    stream = soprano.stream_events(
+                if tts_backend == "pocket_tts":
+                    # Pocket TTS doesn't have true streaming, generate full audio as single chunk
+                    pocket_tts = get_pocket_tts_client()
+                    audio_path = pocket_tts.generate(
                         text=request.input,
-                        temperature=request.soprano_temperature,
-                        top_p=request.soprano_top_p,
-                        repetition_penalty=request.soprano_repetition_penalty,
-                        chunk_size=request.tts_batch_tokens or 1,  # Soprano uses small chunk sizes
-                        request_id=request_id,
-                        stop_event=stop_event
+                        voice=pocket_voice,
+                        speed=getattr(request, 'speed', 1.0),
                     )
-                    print(f"[{request_id}] Got Soprano stream generator")
-                else:
+                    # Emit as a single chunk event
+                    with open(audio_path, 'rb') as f:
+                        audio_bytes = f.read()
+                    loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "start", "chunks": 1, "sample_rate": 48000})
+                    loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "chunk", "index": 0, "audio_bytes": audio_bytes})
+                    loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "complete"})
+                    # Cleanup temp file
+                    try:
+                        os.remove(audio_path)
+                    except:
+                        pass
+                else:  # chatterbox
+                    chatterbox = get_chatterbox_client()
                     stream = chatterbox.stream_events(
                         text=request.input,
                         prompt_audio_path=prompt,
@@ -409,18 +431,18 @@ async def generate_audio_streaming(
                         request_id=request_id,
                         stop_event=stop_event
                     )
-                event_count = 0
-                for event in stream:
-                    # Check if cancelled BEFORE processing event
-                    if stop_event.is_set():
-                        print(f"[{request_id}] Reader thread: stop_event set, breaking after {event_count} events")
-                        break
-                    
-                    event_count += 1
-                    event_type = event.get("type", "unknown")
-                    print(f"[{request_id}] Received event #{event_count}: type={event_type}")
-                    loop.call_soon_threadsafe(event_queue.put_nowait, event)
-                print(f"[{request_id}] Stream iteration complete, received {event_count} events")
+                    event_count = 0
+                    for event in stream:
+                        # Check if cancelled BEFORE processing event
+                        if stop_event.is_set():
+                            print(f"[{request_id}] Reader thread: stop_event set, breaking after {event_count} events")
+                            break
+                        
+                        event_count += 1
+                        event_type = event.get("type", "unknown")
+                        print(f"[{request_id}] Received event #{event_count}: type={event_type}")
+                        loop.call_soon_threadsafe(event_queue.put_nowait, event)
+                    print(f"[{request_id}] Stream iteration complete, received {event_count} events")
             except Exception as e:
                 print(f"[{request_id}] Stream reader exception: {e}")
                 loop.call_soon_threadsafe(
@@ -542,7 +564,7 @@ async def generate_audio_streaming(
             except Exception as e:
                 print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index}: failed to get info: {e}")
             
-            # Standard path - works for both Chatterbox (small chunks) and Soprano (single chunk)
+            # Standard path - works for Chatterbox chunks
             current = tts_path
             
             # RVC (blocking for small chunks is fine)
@@ -562,7 +584,7 @@ async def generate_audio_streaming(
                     pass
             
             # Normalize sample rate before post-processing
-            # CRITICAL: Ensures spatial audio behaves identically for Chatterbox (24kHz) and Soprano (32kHz)
+            # Ensures consistent spatial audio behavior
             if post_params and _needs_resample(current, PIPELINE_SAMPLE_RATE, 1.0):
                 norm_path = await asyncio.get_event_loop().run_in_executor(
                     executor,

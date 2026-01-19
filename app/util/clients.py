@@ -106,7 +106,7 @@ WHISPERASR_SERVER_URL = os.getenv("WHISPERASR_SERVER_URL", ASR_SERVER_URL)
 GLMASR_SERVER_URL = os.getenv("GLMASR_SERVER_URL", ASR_SERVER_URL)
 RVC_SERVER_URL = os.getenv("RVC_SERVER_URL", "http://127.0.0.1:8891")
 CHATTERBOX_SERVER_URL = os.getenv("CHATTERBOX_SERVER_URL", "http://127.0.0.1:8893")
-SOPRANO_SERVER_URL = os.getenv("SOPRANO_SERVER_URL", "http://127.0.0.1:8894")
+POCKET_TTS_SERVER_URL = os.getenv("POCKET_TTS_SERVER_URL", "http://127.0.0.1:8894")
 #
 # Audio Services (combined preprocess+postprocess+background audio)
 # If AUDIO_SERVICES_SERVER_URL is set, Postprocess/Preprocess default to it.
@@ -1918,203 +1918,122 @@ class ChatterboxClient(BaseServiceClient):
                 pass
 
 
-class SopranoClient(BaseServiceClient):
-    """Client for the Soprano TTS server.
+# ============================================
+# POCKET TTS CLIENT (Kyutai Moshi-based TTS)
+# ============================================
+
+class PocketTTSClient(BaseServiceClient):
+    """Client for the Pocket TTS server (Kyutai Moshi-based).
     
-    Soprano is an extremely lightweight TTS model (80M parameters) that can achieve
-    up to 2000x real-time speed. It doesn't require voice prompts like Chatterbox.
-    
-    Key features:
-    - No voice prompt needed (uses fixed voice)
-    - Very fast inference
-    - Streaming support with low latency
-    - Sample rate: 32kHz
+    Pocket TTS is a lightweight TTS model that supports:
+    - Zero-shot voice cloning via audio prompt
+    - Built-in voice presets (alba, marius, javert, etc.)
+    - OpenAI-compatible /v1/audio/speech API
     """
     
-    SAMPLE_RATE = 32000  # Soprano outputs at 32kHz
-
+    # Built-in voice presets
+    BUILTIN_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
+    
     def __init__(self, server_url: str = None):
-        super().__init__(server_url or SOPRANO_SERVER_URL)
+        super().__init__(server_url or POCKET_TTS_SERVER_URL)
         self._server_available = None
-
+    
     def is_available(self) -> bool:
+        """Check if Pocket TTS server is available (with caching)."""
         if self._server_available:
             return True
+        
         result = super().is_available()
         if result:
             self._server_available = True
         return result
-
+    
     def reset_availability_cache(self):
+        """Reset the availability cache."""
         self._server_available = None
     
     def get_status(self) -> dict:
-        """Get Soprano server status."""
+        """Get server status."""
         status = super().get_status()
         if "model_loaded" not in status:
             status["model_loaded"] = False
         return status
     
-    def get_model_info(self) -> dict:
-        """Get information about the loaded Soprano model."""
+    def get_voices(self) -> list:
+        """Get list of available built-in voices."""
         try:
-            response = self.session.get(f"{self.server_url}/model_info", timeout=5)
+            response = self.session.get(f"{self.server_url}/v1/voices", timeout=5)
             if response.status_code == 200:
-                return response.json()
-            return {"loaded": False, "error": response.text}
-        except requests.exceptions.ConnectionError:
-            return {"loaded": False, "error": "Soprano server not running"}
-        except Exception as e:
-            return {"loaded": False, "error": str(e)}
+                return response.json().get("voices", self.BUILTIN_VOICES)
+            return self.BUILTIN_VOICES
+        except Exception:
+            return self.BUILTIN_VOICES
     
-    def get_gpu_memory(self) -> dict:
-        """Get GPU memory usage from Soprano server."""
-        try:
-            response = self.session.get(f"{self.server_url}/gpu_memory", timeout=5)
-            if response.status_code == 200:
-                return response.json()
-            return {"available": False, "error": response.text}
-        except requests.exceptions.ConnectionError:
-            return {"available": False, "error": "Soprano server not running"}
-        except Exception as e:
-            return {"available": False, "error": str(e)}
-    
-    def unload(self) -> dict:
-        """Unload the Soprano model to free GPU memory."""
-        try:
-            response = self.session.post(f"{self.server_url}/unload", timeout=30)
-            if response.status_code == 200:
-                return response.json()
-            return {"success": False, "error": response.text}
-        except requests.exceptions.ConnectionError:
-            return {"success": False, "error": "Soprano server not running"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
     def generate(
         self,
         text: str,
-        temperature: float = None,
-        top_p: float = None,
-        repetition_penalty: float = None,
+        voice: str = "alba",
+        speed: float = 1.0,
         request_id: str = None
     ) -> str:
+        """
+        Generate TTS audio using Pocket TTS.
+        
+        Args:
+            text: Text to synthesize
+            voice: Voice name OR path to audio prompt for cloning.
+                   Built-in voices: alba, marius, javert, jean, fantine, cosette, eponine, azelma
+                   For cloning: pass the path to a reference audio file
+            speed: Playback speed (0.25-4.0)
+            request_id: Optional request ID for logging
+        
+        Returns:
+            Path to output WAV file
+        
+        Raises:
+            RuntimeError: If generation fails
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
-            payload = {"input": text}
-            if temperature is not None:
-                payload["temperature"] = temperature
-            if top_p is not None:
-                payload["top_p"] = top_p
-            if repetition_penalty is not None:
-                payload["repetition_penalty"] = repetition_penalty
-
+            payload = {
+                "model": "pocket-tts",
+                "input": text,
+                "voice": voice,
+                "response_format": "wav",
+                "speed": speed
+            }
+            
+            logger.info(f"[PocketTTS] Sending request to {self.server_url}/v1/audio/speech")
+            logger.info(f"[PocketTTS] Payload: voice={voice}, text_len={len(text)}")
+            print(f"[PocketTTS] Sending request to {self.server_url}/v1/audio/speech")
+            
             response = self.session.post(
-                f"{self.server_url}/v1/tts",
+                f"{self.server_url}/v1/audio/speech",
                 json=payload,
-                timeout=600
+                timeout=300  # 5 minute timeout
             )
-
+            
             if response.status_code != 200:
-                raise RuntimeError(f"Soprano server error: {response.status_code} - {response.text}")
-
-            fd, output_path = tempfile.mkstemp(suffix="_soprano.wav")
+                raise RuntimeError(f"Pocket TTS server error: {response.status_code} - {response.text}")
+            
+            # Save response audio to temp file
+            fd, output_path = tempfile.mkstemp(suffix="_pocket_tts.wav")
             os.close(fd)
             with open(output_path, "wb") as f:
                 f.write(response.content)
             return output_path
-
+        
         except requests.exceptions.ConnectionError:
             raise self._handle_connection_error(
-                "Soprano",
-                "Please start the Soprano server using the launch_soprano_server.bat script."
+                "Pocket TTS",
+                "Please start the Pocket TTS server."
             )
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Soprano generation failed: {e}")
-
-    def stream_events(
-        self,
-        text: str,
-        temperature: float = None,
-        top_p: float = None,
-        repetition_penalty: float = None,
-        chunk_size: int = None,
-        request_id: str = None,
-        stop_event: Optional[threading.Event] = None
-    ):
-        import base64
-        import json
-
-        payload = {"input": text}
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if top_p is not None:
-            payload["top_p"] = top_p
-        if repetition_penalty is not None:
-            payload["repetition_penalty"] = repetition_penalty
-        if chunk_size is not None:
-            payload["chunk_size"] = chunk_size
-
-        response = None
-        try:
-            response = self.session.post(
-                f"{self.server_url}/v1/tts/stream",
-                json=payload,
-                stream=True,
-                timeout=1800
-            )
-
-            if response.status_code in (404, 501):
-                print(f"[SopranoClient] Streaming endpoint returned {response.status_code}")
-                yield {"type": "error", "message": f"Streaming not available (HTTP {response.status_code})"}
-                return
-
-            if response.status_code != 200:
-                raise RuntimeError(f"Soprano stream error: {response.status_code} - {response.text}")
-
-            buffer = ""
-            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
-                if stop_event and stop_event.is_set():
-                    print(f"[SopranoClient] Stop event set, closing stream")
-                    break
-                if not chunk:
-                    continue
-                buffer += chunk
-                while "\n\n" in buffer:
-                    # Also check stop_event in inner loop for faster response
-                    if stop_event and stop_event.is_set():
-                        print(f"[SopranoClient] Stop event set (inner), closing stream")
-                        return
-                    
-                    event, buffer = buffer.split("\n\n", 1)
-                    if not event.startswith("data: "):
-                        continue
-                    try:
-                        event_data = json.loads(event[6:])
-                    except json.JSONDecodeError:
-                        continue
-
-                    event_type = event_data.get("type")
-                    if event_type == "chunk":
-                        audio_b64 = event_data.get("audio")
-                        if not audio_b64:
-                            continue
-                        event_data["audio_bytes"] = base64.b64decode(audio_b64)
-
-                    if event_type == "error":
-                        raise RuntimeError(f"Soprano stream error: {event_data.get('message')}")
-
-                    yield event_data
-
-                    if event_type == "complete":
-                        return
-        finally:
-            try:
-                if response is not None:
-                    response.close()
-            except Exception:
-                pass
+            raise RuntimeError(f"Pocket TTS generation failed: {e}")
 
 
 # ============================================
@@ -2126,7 +2045,7 @@ _asr_client = None
 _glmasr_client = None
 _rvc_client = None
 _chatterbox_client = None
-_soprano_client = None
+_pocket_tts_client = None
 
 
 # ASR helpers (Whisper - default)
@@ -2739,22 +2658,23 @@ def get_chatterbox_client() -> ChatterboxClient:
     return _chatterbox_client
 
 
-def get_soprano_client() -> SopranoClient:
-    """Get or create the global Soprano client."""
-    global _soprano_client
-    if _soprano_client is None:
-        _soprano_client = SopranoClient()
-    return _soprano_client
-
-
 def is_chatterbox_server_available() -> bool:
     """Check if Chatterbox server is available."""
     return get_chatterbox_client().is_available()
 
 
-def is_soprano_server_available() -> bool:
-    """Check if Soprano server is available."""
-    return get_soprano_client().is_available()
+# Pocket TTS helpers
+def get_pocket_tts_client() -> PocketTTSClient:
+    """Get or create the global Pocket TTS client."""
+    global _pocket_tts_client
+    if _pocket_tts_client is None:
+        _pocket_tts_client = PocketTTSClient()
+    return _pocket_tts_client
+
+
+def is_pocket_tts_server_available() -> bool:
+    """Check if Pocket TTS server is available."""
+    return get_pocket_tts_client().is_available()
 
 
 # Export all public symbols
@@ -2766,7 +2686,7 @@ __all__ = [
     'GLMASRClient',
     'RVCClient', 
     'ChatterboxClient',
-    'SopranoClient',
+    'PocketTTSClient',
     'PostProcessClient',
     'PreprocessClient',
     # ASR helpers (Whisper)
@@ -2799,14 +2719,15 @@ __all__ = [
     # Chatterbox helpers
     'get_chatterbox_client',
     'is_chatterbox_server_available',
-    'get_soprano_client',
-    'is_soprano_server_available',
+    # Pocket TTS helpers
+    'get_pocket_tts_client',
+    'is_pocket_tts_server_available',
     # Server URLs
     'get_shared_session',
     'WHISPERASR_SERVER_URL',
     'GLMASR_SERVER_URL',
     'RVC_SERVER_URL',
     'CHATTERBOX_SERVER_URL',
-    'SOPRANO_SERVER_URL',
+    'POCKET_TTS_SERVER_URL',
     'AUDIO_SERVICES_SERVER_URL',
 ]

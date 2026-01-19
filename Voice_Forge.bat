@@ -10,9 +10,8 @@ set "ASR_ENV_NAME=asr"
 set "RVC_ENV_NAME=rvc"
 set "AUDIO_SERVICES_ENV_NAME=audio_services"
 set "CHATTERBOX_ENV_NAME=chatterbox"
-set "SOPRANO_ENV_NAME=soprano"
-set "SOPRANO_TRAIN_ENV_NAME=soprano_train"
 set "CHATTERBOX_TRAIN_ENV_NAME=chatterbox_train"
+set "POCKET_TTS_ENV_NAME=pocket_tts"
 set "REQ_FILE=%~dp0app\install\requirements_main.txt"
 set "CUSTOM_DEPS=%~dp0app\assets\custom_dependencies"
 set "PYTHONFAULTHANDLER=1"
@@ -20,7 +19,7 @@ set "ASR_SERVER_PORT=8889"
 set "RVC_SERVER_PORT=8891"
 set "AUDIO_SERVICES_SERVER_PORT=8892"
 set "CHATTERBOX_SERVER_PORT=8893"
-set "SOPRANO_SERVER_PORT=8894"
+set "POCKET_TTS_SERVER_PORT=8894"
 set "TRAINING_SERVER_PORT=8895"
 
 :: Find conda
@@ -88,32 +87,16 @@ echo.
 echo =============================================
 echo   TTS Training Setup
 echo =============================================
-echo   [1] Install Soprano Training (Soprano-Factory)
-echo   [2] Install Chatterbox Training (Fine-tuning)
-echo   [3] Install Both Training Envs
-echo   [4] Launch Training Server
-echo   [5] Back to Utilities
+echo   [1] Install Chatterbox Training (Fine-tuning)
+echo   [2] Launch Training Server
+echo   [3] Back to Utilities
 echo =============================================
 echo.
 
-choice /C 12345 /N /M "Choose [1-5]: "
-if errorlevel 5 goto UTILITIES_MENU
-if errorlevel 4 goto LAUNCH_TRAINING_SERVER
-if errorlevel 3 goto INSTALL_BOTH_TRAINING
-if errorlevel 2 goto INSTALL_CHATTERBOX_TRAINING
-if errorlevel 1 goto INSTALL_SOPRANO_TRAINING
-goto TRAINING_MENU
-
-:INSTALL_SOPRANO_TRAINING
-echo.
-echo [INFO] Installing Soprano-Factory training environment...
-call "%~dp0app\install\install_soprano_train.bat"
-if errorlevel 1 (
-    echo [ERROR] Soprano training environment setup failed.
-) else (
-    echo [INFO] Soprano training environment installed successfully!
-)
-pause
+choice /C 123 /N /M "Choose [1-3]: "
+if errorlevel 3 goto UTILITIES_MENU
+if errorlevel 2 goto LAUNCH_TRAINING_SERVER
+if errorlevel 1 goto INSTALL_CHATTERBOX_TRAINING
 goto TRAINING_MENU
 
 :INSTALL_CHATTERBOX_TRAINING
@@ -125,26 +108,6 @@ if errorlevel 1 (
 ) else (
     echo [INFO] Chatterbox training environment installed successfully!
 )
-pause
-goto TRAINING_MENU
-
-:INSTALL_BOTH_TRAINING
-echo.
-echo [INFO] Installing both training environments...
-echo.
-
-call "%~dp0app\install\install_soprano_train.bat"
-if errorlevel 1 (
-    echo [WARN] Soprano training environment had issues.
-)
-
-call "%~dp0app\install\install_chatterbox_train.bat"
-if errorlevel 1 (
-    echo [WARN] Chatterbox training environment had issues.
-)
-
-echo.
-echo [INFO] Training environments setup complete!
 pause
 goto TRAINING_MENU
 
@@ -237,34 +200,47 @@ echo [DEBUG] Checking for Chatterbox environment: %CHATTERBOX_ENV_NAME%
 if not exist "%CONDA_BASE%\envs\%CHATTERBOX_ENV_NAME%\python.exe" goto CHATTERBOX_NOT_FOUND
 
 echo [DEBUG] Chatterbox environment found
-if not exist "%~dp0app\launch\launch_chatterbox_server.bat" goto CHECK_SOPRANO
+if not exist "%~dp0app\launch\launch_chatterbox_server.bat" goto CHECK_POCKET_TTS
 echo [INFO] Starting Chatterbox-Turbo server in background...
 start "VoiceForge Chatterbox-Turbo Server" cmd /k "%~dp0app\launch\launch_chatterbox_server.bat"
 echo [INFO] Chatterbox-Turbo server starting...
 timeout /t 2 /nobreak >nul
-goto CHECK_SOPRANO
+goto CHECK_POCKET_TTS
 
 :CHATTERBOX_NOT_FOUND
 echo [DEBUG] Chatterbox environment not found - skipping
-goto CHECK_SOPRANO
 
-::CHECK_SOPRANO
-:: Check and launch Soprano TTS server
-:CHECK_SOPRANO
-echo [DEBUG] Checking for Soprano environment: %SOPRANO_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%SOPRANO_ENV_NAME%\python.exe" goto SOPRANO_NOT_FOUND
+:CHECK_POCKET_TTS
+:: Check and launch Pocket TTS server
+echo [DEBUG] Checking for Pocket TTS environment: %POCKET_TTS_ENV_NAME%
+if not exist "%CONDA_BASE%\envs\%POCKET_TTS_ENV_NAME%\python.exe" goto POCKET_TTS_NOT_FOUND
 
-echo [DEBUG] Soprano environment found
-if not exist "%~dp0app\launch\launch_soprano_server.bat" goto SERVICES_DONE
-echo [INFO] Starting Soprano server in background...
-start "VoiceForge Soprano Server" cmd /k "%~dp0app\launch\launch_soprano_server.bat"
-echo [INFO] Soprano server starting...
+echo [DEBUG] Pocket TTS environment found
+if not exist "%~dp0app\launch\launch_pocket_tts_server.bat" goto CHECK_TRAINING
+echo [INFO] Starting Pocket TTS server in background...
+start "VoiceForge Pocket TTS Server" cmd /k "%~dp0app\launch\launch_pocket_tts_server.bat"
+echo [INFO] Pocket TTS server starting on port %POCKET_TTS_SERVER_PORT%...
+timeout /t 2 /nobreak >nul
+goto CHECK_TRAINING
+
+:POCKET_TTS_NOT_FOUND
+echo [DEBUG] Pocket TTS environment not found - skipping
+
+:CHECK_TRAINING
+:: Check and launch Training server (for fine-tuning Chatterbox models)
+echo [DEBUG] Checking for Training environment: %CHATTERBOX_TRAIN_ENV_NAME%
+if not exist "%CONDA_BASE%\envs\%CHATTERBOX_TRAIN_ENV_NAME%\python.exe" goto TRAINING_NOT_FOUND
+
+echo [DEBUG] Training environment found
+if not exist "%~dp0app\launch\launch_training_server.bat" goto SERVICES_DONE
+echo [INFO] Starting Training server in background...
+start "VoiceForge Training Server" cmd /k "%~dp0app\launch\launch_training_server.bat"
+echo [INFO] Training server starting on port %TRAINING_SERVER_PORT%...
 timeout /t 2 /nobreak >nul
 goto SERVICES_DONE
 
-::SOPRANO_NOT_FOUND
-:SOPRANO_NOT_FOUND
-echo [DEBUG] Soprano environment not found - skipping
+:TRAINING_NOT_FOUND
+echo [DEBUG] Training environment not found - skipping (install via Training Setup menu)
 
 :SERVICES_DONE
 echo [INFO] Background services launch complete.
@@ -329,14 +305,14 @@ if not errorlevel 1 (
     echo [SKIP] %CHATTERBOX_ENV_NAME% not installed
 )
 
-:: Update Soprano env if exists
-"%CONDA_EXE%" env list | findstr /C:"%SOPRANO_ENV_NAME%" >nul 2>&1
+:: Update Pocket TTS env if exists
+"%CONDA_EXE%" env list | findstr /C:"%POCKET_TTS_ENV_NAME%" >nul 2>&1
 if not errorlevel 1 (
-    echo [INFO] Updating %SOPRANO_ENV_NAME%...
-    call "%~dp0app\install\install_soprano.bat"
-    if errorlevel 1 echo [WARN] Soprano environment update had issues
+    echo [INFO] Updating %POCKET_TTS_ENV_NAME%...
+    call "%~dp0app\install\install_pocket_tts.bat"
+    if errorlevel 1 echo [WARN] Pocket TTS environment update had issues
 ) else (
-    echo [SKIP] %SOPRANO_ENV_NAME% not installed
+    echo [SKIP] %POCKET_TTS_ENV_NAME% not installed
 )
 
 echo.
@@ -350,7 +326,7 @@ goto UTILITIES_MENU
 :INSTALL_ALL_ENVS
 echo.
 echo [INFO] Installing all environments...
-echo [INFO] This will setup: %CONDA_ENV_NAME%, %ASR_ENV_NAME%, %RVC_ENV_NAME%, %AUDIO_SERVICES_ENV_NAME%, %CHATTERBOX_ENV_NAME%, %SOPRANO_ENV_NAME%
+echo [INFO] This will setup: %CONDA_ENV_NAME%, %ASR_ENV_NAME%, %RVC_ENV_NAME%, %AUDIO_SERVICES_ENV_NAME%, %CHATTERBOX_ENV_NAME%, %POCKET_TTS_ENV_NAME%
 echo.
 pause
 
@@ -390,12 +366,10 @@ if errorlevel 1 (
     goto UTILITIES_MENU
 )
 
-:: Install Soprano env
-call "%~dp0app\install\install_soprano.bat"
+:: Install Pocket TTS env
+call "%~dp0app\install\install_pocket_tts.bat"
 if errorlevel 1 (
-    echo [ERROR] Soprano environment setup failed.
-    pause
-    goto UTILITIES_MENU
+    echo [WARN] Pocket TTS environment setup had issues (optional component).
 )
 
 echo.
@@ -418,8 +392,7 @@ echo     - %ASR_ENV_NAME%
 echo     - %AUDIO_SERVICES_ENV_NAME%
 echo     - %RVC_ENV_NAME%
 echo     - %CHATTERBOX_ENV_NAME%
-echo     - %SOPRANO_ENV_NAME%
-echo     - %SOPRANO_TRAIN_ENV_NAME% (if exists)
+echo     - %POCKET_TTS_ENV_NAME%
 echo     - %CHATTERBOX_TRAIN_ENV_NAME% (if exists)
 echo.
 echo   Press Y to confirm, N to cancel.
@@ -466,20 +439,14 @@ if not errorlevel 1 (
     "%CONDA_EXE%" env remove -n "%CHATTERBOX_ENV_NAME%" -y
 )
 
-:: Delete Soprano env
-"%CONDA_EXE%" env list | findstr /C:"%SOPRANO_ENV_NAME%" >nul 2>&1
+:: Delete Pocket TTS env
+"%CONDA_EXE%" env list | findstr /C:"%POCKET_TTS_ENV_NAME%" >nul 2>&1
 if not errorlevel 1 (
-    echo [INFO] Removing %SOPRANO_ENV_NAME%...
-    "%CONDA_EXE%" env remove -n "%SOPRANO_ENV_NAME%" -y
+    echo [INFO] Removing %POCKET_TTS_ENV_NAME%...
+    "%CONDA_EXE%" env remove -n "%POCKET_TTS_ENV_NAME%" -y
 )
 
 :: Delete Training envs (if they exist)
-"%CONDA_EXE%" env list | findstr /C:"%SOPRANO_TRAIN_ENV_NAME%" >nul 2>&1
-if not errorlevel 1 (
-    echo [INFO] Removing %SOPRANO_TRAIN_ENV_NAME%...
-    "%CONDA_EXE%" env remove -n "%SOPRANO_TRAIN_ENV_NAME%" -y
-)
-
 "%CONDA_EXE%" env list | findstr /C:"%CHATTERBOX_TRAIN_ENV_NAME%" >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Removing %CHATTERBOX_TRAIN_ENV_NAME%...
@@ -519,8 +486,8 @@ set "PYTHONPATH=%CUSTOM_DEPS%;%PYTHONPATH%"
 set "ASR_SERVER_URL=http://127.0.0.1:%ASR_SERVER_PORT%"
 set "RVC_SERVER_URL=http://127.0.0.1:%RVC_SERVER_PORT%"
 set "CHATTERBOX_SERVER_URL=http://127.0.0.1:%CHATTERBOX_SERVER_PORT%"
-set "SOPRANO_SERVER_URL=http://127.0.0.1:%SOPRANO_SERVER_PORT%"
-set "SOPRANO_SERVER_URL=http://127.0.0.1:%SOPRANO_SERVER_PORT%"
+set "POCKET_TTS_SERVER_URL=http://127.0.0.1:%POCKET_TTS_SERVER_PORT%"
+set "TRAINING_SERVER_URL=http://127.0.0.1:%TRAINING_SERVER_PORT%"
 
 :: Launch ASR server in background (if env exists)
 echo [DEBUG] About to launch background services...
@@ -563,8 +530,8 @@ echo [INFO] Launching VoiceForge...
 echo [INFO] ASR Server URL: %ASR_SERVER_URL% (Whisper + GLM-ASR)
 echo [INFO] RVC Server URL: %RVC_SERVER_URL%
 echo [INFO] Chatterbox Server URL: %CHATTERBOX_SERVER_URL%
-echo [INFO] Soprano Server URL: %SOPRANO_SERVER_URL%
-echo [INFO] Soprano Server URL: %SOPRANO_SERVER_URL%
+echo [INFO] Pocket TTS Server URL: %POCKET_TTS_SERVER_URL%
+echo [INFO] Training Server URL: %TRAINING_SERVER_URL%
 echo [DEBUG] Python path: 
 where python
 echo [DEBUG] Current directory: %CD%
@@ -620,14 +587,18 @@ set "PYTHONPATH=%CUSTOM_DEPS%;%PYTHONPATH%"
 set "ASR_SERVER_URL=http://127.0.0.1:%ASR_SERVER_PORT%"
 set "RVC_SERVER_URL=http://127.0.0.1:%RVC_SERVER_PORT%"
 set "CHATTERBOX_SERVER_URL=http://127.0.0.1:%CHATTERBOX_SERVER_PORT%"
+set "POCKET_TTS_SERVER_URL=http://127.0.0.1:%POCKET_TTS_SERVER_PORT%"
+set "TRAINING_SERVER_URL=http://127.0.0.1:%TRAINING_SERVER_PORT%"
 
-:: Launch ASR, RVC, and Chatterbox servers in background
+:: Launch ASR, RVC, Chatterbox, Pocket TTS, and Training servers in background
 call :LAUNCH_SERVICES
 
 echo [INFO] Launching API server on port 8888...
 echo [INFO] ASR Server URL: %ASR_SERVER_URL% (Whisper + GLM-ASR)
 echo [INFO] RVC Server URL: %RVC_SERVER_URL%
 echo [INFO] Chatterbox Server URL: %CHATTERBOX_SERVER_URL%
+echo [INFO] Pocket TTS Server URL: %POCKET_TTS_SERVER_URL%
+echo [INFO] Training Server URL: %TRAINING_SERVER_URL%
 python -X faulthandler -u "app\servers\main_server.py" --port 8888
 
 echo.

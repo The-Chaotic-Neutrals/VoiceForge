@@ -33,6 +33,7 @@ from util.clients import (
     is_postprocess_server_available,
     is_whisperasr_available,
     is_chatterbox_server_available,
+    is_pocket_tts_server_available,
     get_shared_session,
     RVC_SERVER_URL,
 )
@@ -127,24 +128,12 @@ async def get_models():
 
 @app.get("/api/custom-models")
 async def get_custom_models():
-    """List custom trained TTS models (Soprano and Chatterbox)."""
+    """List custom trained TTS models (Chatterbox)."""
     import httpx
     
     custom_models = {
-        "soprano": [],
         "chatterbox": []
     }
-    
-    # Query Soprano server for custom models
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            res = await client.get("http://127.0.0.1:8894/v1/models")
-            if res.status_code == 200:
-                data = res.json()
-                custom_models["soprano"] = [m for m in data.get("models", []) if m.get("type") == "custom"]
-                custom_models["soprano_current"] = data.get("current", "default")
-    except Exception as e:
-        custom_models["soprano_error"] = str(e)
     
     # Query Chatterbox server for custom models
     try:
@@ -157,13 +146,7 @@ async def get_custom_models():
     except Exception as e:
         custom_models["chatterbox_error"] = str(e)
     
-    # Also check local directories if servers are not available
-    soprano_custom_dir = os.path.join(APP_DIR, "models", "soprano_custom")
-    if os.path.exists(soprano_custom_dir) and not custom_models["soprano"]:
-        for name in os.listdir(soprano_custom_dir):
-            if os.path.isdir(os.path.join(soprano_custom_dir, name)):
-                custom_models["soprano"].append({"name": name, "type": "custom", "path": os.path.join(soprano_custom_dir, name)})
-    
+    # Also check local directories if server is not available
     chatterbox_custom_dir = os.path.join(APP_DIR, "models", "chatterbox_custom")
     if os.path.exists(chatterbox_custom_dir) and not custom_models["chatterbox"]:
         for name in os.listdir(chatterbox_custom_dir):
@@ -180,6 +163,7 @@ async def get_modules():
         "rvc": is_rvc_server_available(),
         "postprocess": is_postprocess_server_available(),
         "chatterbox": is_chatterbox_server_available(),
+        "pocket_tts": is_pocket_tts_server_available(),
         "asr": is_whisperasr_available(),
     }
 
@@ -254,6 +238,7 @@ async def startup():
     print("\nServices:")
     for name, fn in [("RVC", is_rvc_server_available), ("Post", is_postprocess_server_available),
                      ("Chatterbox", is_chatterbox_server_available),
+                     ("Pocket TTS", is_pocket_tts_server_available),
                      ("ASR", is_whisperasr_available)]:
         try: print(f"  {name}: {'✓' if fn() else '✗'}")
         except: print(f"  {name}: ✗")

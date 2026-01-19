@@ -146,7 +146,7 @@ async def create_speech(
     if rvc_model:
         request.rvc_model = rvc_model
     
-    print(f"[{request_id}] TTS request: mode={request.tts_mode}, rvc={request.rvc_model}")
+    print(f"[{request_id}] TTS request: mode={request.tts_mode}, backend={request.tts_backend}, rvc={request.rvc_model}")
     
     # Run pipeline with request_id for cancellation support
     result = await generate_audio(request, request_id=request_id)
@@ -213,7 +213,7 @@ async def generate_speech_stream(
     if rvc_model:
         request.rvc_model = rvc_model
     
-    print(f"[{request_id}] TTS stream request: rvc={request.rvc_model}")
+    print(f"[{request_id}] TTS stream request: backend={request.tts_backend}, rvc={request.rvc_model}")
     
     async def event_generator():
         """Generate SSE events from the streaming pipeline."""

@@ -27,14 +27,20 @@ class TTSRequest(BaseModel):
         default="chunked",
         description="Generation mode: 'chunked' (wait for complete) or 'streaming' (progressive)"
     )
-    tts_backend: str = Field(default="chatterbox", description="TTS backend: chatterbox or soprano")
+    tts_backend: Literal["chatterbox", "pocket_tts"] = Field(
+        default="chatterbox", 
+        description="TTS backend: chatterbox or pocket_tts"
+    )
     tts_batch_tokens: int = Field(default=100, description="Max tokens per TTS batch")
     tts_token_method: str = Field(default="tiktoken", description="Token counting method")
     chatterbox_prompt_audio: Optional[str] = Field(default=None, description="Reference audio path for voice cloning")
     chatterbox_seed: int = Field(default=0, description="Random seed (0 = random)")
-    soprano_temperature: Optional[float] = Field(default=None, description="Soprano sampling temperature (>0)")
-    soprano_top_p: Optional[float] = Field(default=None, description="Soprano nucleus sampling top_p")
-    soprano_repetition_penalty: Optional[float] = Field(default=None, description="Soprano repetition penalty")
+    
+    # Pocket TTS settings
+    pocket_tts_voice: str = Field(
+        default="alba", 
+        description="Voice name or path to audio prompt for Pocket TTS cloning"
+    )
     
     # Output format
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field(

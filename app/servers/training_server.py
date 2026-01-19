@@ -1,5 +1,5 @@
 # TTS Training Server for VoiceForge
-# Supports Soprano-Factory and Chatterbox fine-tuning
+# Supports Chatterbox fine-tuning
 # Copyright (c) 2026
 
 import os
@@ -49,11 +49,10 @@ app.add_middleware(
 TRAINING_DIR = os.path.join(_APP_DIR, "training")
 DATASETS_DIR = os.path.join(_APP_DIR, "datasets")
 MODELS_DIR = os.path.join(_APP_DIR, "models")
-SOPRANO_CUSTOM_DIR = os.path.join(MODELS_DIR, "soprano_custom")
 CHATTERBOX_CUSTOM_DIR = os.path.join(MODELS_DIR, "chatterbox_custom")
 
 # Ensure directories exist
-for d in [TRAINING_DIR, DATASETS_DIR, SOPRANO_CUSTOM_DIR, CHATTERBOX_CUSTOM_DIR]:
+for d in [TRAINING_DIR, DATASETS_DIR, CHATTERBOX_CUSTOM_DIR]:
     os.makedirs(d, exist_ok=True)
 
 
@@ -63,10 +62,8 @@ def find_dataset_path(name: str) -> str:
     # Check locations in order of priority
     possible_paths = [
         os.path.join(DATASETS_DIR, name),  # Direct in datasets/
-        os.path.join(DATASETS_DIR, "soprano", name),  # Legacy soprano location
         os.path.join(DATASETS_DIR, "chatterbox", name),  # Legacy chatterbox location
         os.path.join(TRAINING_DIR, "chatterbox-finetuning", name),  # Training dir
-        os.path.join(TRAINING_DIR, "soprano-factory", name),  # Training dir
     ]
     
     for path in possible_paths:
@@ -115,7 +112,7 @@ class JobStatus(str, Enum):
 @dataclass
 class TrainingJob:
     job_id: str
-    backend: str  # "soprano" or "chatterbox"
+    backend: str  # "chatterbox"
     status: JobStatus
     config: Dict[str, Any]
     created_at: str
@@ -139,25 +136,6 @@ ws_connections: List[WebSocket] = []
 # Request Models
 # ============================================
 
-class SopranoTrainRequest(BaseModel):
-    """Soprano-Factory training configuration."""
-    model_name: str = Field(..., description="Name for the output model")
-    dataset_path: str = Field(..., description="Path to dataset folder (LJSpeech format)")
-    epochs: int = Field(default=20, ge=1, le=1000)
-    # Learning rate - LoRA can use higher LR (5e-5), full fine-tune needs lower (2e-5)
-    learning_rate: float = Field(default=5e-5, ge=1e-6, le=1e-2)
-    batch_size: int = Field(default=4, ge=1, le=32)
-    save_every: int = Field(default=10, ge=1, description="Save checkpoint every N epochs")
-    warmup_steps: int = Field(default=100, ge=0)
-    gradient_accumulation: int = Field(default=1, ge=1, le=64)
-    # LoRA settings - HIGHLY RECOMMENDED for Soprano fine-tuning
-    # Full fine-tuning destroys hidden state distribution that decoder expects
-    use_lora: bool = Field(default=True, description="Use LoRA (recommended - preserves voice quality)")
-    lora_rank: int = Field(default=32, ge=4, le=256, description="LoRA rank (higher=more capacity)")
-    lora_alpha: int = Field(default=64, ge=4, le=512, description="LoRA alpha (usually 2x rank)")
-    lora_dropout: float = Field(default=0.05, ge=0.0, le=0.5, description="LoRA dropout")
-
-
 class ChatterboxTrainRequest(BaseModel):
     """Chatterbox fine-tuning configuration."""
     model_name: str = Field(..., description="Name for the output model")
@@ -174,7 +152,7 @@ class ChatterboxTrainRequest(BaseModel):
 class DatasetPrepareRequest(BaseModel):
     """Dataset preparation request."""
     name: str = Field(..., description="Dataset name")
-    backend: str = Field(..., description="Target backend: soprano or chatterbox")
+    backend: str = Field(..., description="Target backend: chatterbox")
     source_files: List[str] = Field(default=[], description="List of source audio file paths")
     transcribe: bool = Field(default=True, description="Auto-transcribe using Whisper")
     segment: bool = Field(default=True, description="Segment into 3-10s chunks using VAD")
@@ -258,7 +236,7 @@ def parse_training_output(line: str, backend: str) -> Optional[Dict[str, Any]]:
         if epoch_match.group(2):
             progress["total_epochs"] = int(epoch_match.group(2))
     
-    # For Soprano: prefer audio loss over text loss (audio loss is what matters for TTS quality)
+    # Audio loss pattern
     audio_loss_match = re.search(r'audio loss[:\s]+([\d.]+)', clean_line)
     if audio_loss_match:
         progress["loss"] = float(audio_loss_match.group(1))
@@ -299,9 +277,7 @@ async def run_training_process(job: TrainingJob):
             "message": f"Starting {job.backend} training..."
         })
         
-        if job.backend == "soprano":
-            await run_soprano_training(job)
-        elif job.backend == "chatterbox":
+        if job.backend == "chatterbox":
             await run_chatterbox_training(job)
         else:
             raise ValueError(f"Unknown backend: {job.backend}")
@@ -328,340 +304,6 @@ async def run_training_process(job: TrainingJob):
             "status": "failed",
             "error": str(e)
         })
-
-
-async def run_soprano_training(job: TrainingJob):
-    """Run Soprano-Factory training using the real train.py from ekwek1/soprano-factory."""
-    config = job.config
-    env_name = "soprano_train"
-    factory_dir = os.path.join(TRAINING_DIR, "soprano-factory")
-    
-    # Check for the REAL soprano-factory (has train.py), not the inference library
-    train_script_path = os.path.join(factory_dir, "train.py")
-    generate_script_path = os.path.join(factory_dir, "generate_dataset.py")
-    
-    if not os.path.exists(train_script_path):
-        raise FileNotFoundError(
-            f"Soprano-Factory train.py not found at {factory_dir}. "
-            f"The wrong repository may have been cloned. "
-            f"Please delete {factory_dir} and run install_soprano_train.bat again to clone "
-            f"https://github.com/ekwek1/soprano-factory (not ekwek1/soprano)."
-        )
-    
-    if not os.path.exists(generate_script_path):
-        raise FileNotFoundError(
-            f"Soprano-Factory generate_dataset.py not found at {factory_dir}. "
-            f"Please ensure the correct repository (ekwek1/soprano-factory) is cloned."
-        )
-    
-    output_dir = os.path.join(SOPRANO_CUSTOM_DIR, config["model_name"])
-    os.makedirs(output_dir, exist_ok=True)
-    
-    dataset_path = config["dataset_path"]
-    
-    # Soprano-Factory expects metadata.txt but our datasets use metadata.csv (LJSpeech format)
-    # Check and convert if necessary
-    metadata_txt = os.path.join(dataset_path, "metadata.txt")
-    metadata_csv = os.path.join(dataset_path, "metadata.csv")
-    
-    convert_metadata_code = ""
-    if not os.path.exists(metadata_txt) and os.path.exists(metadata_csv):
-        # Need to convert metadata.csv to metadata.txt
-        convert_metadata_code = f'''
-# Convert metadata.csv to metadata.txt (soprano-factory expects .txt)
-# Note: soprano-factory uses f.read().split('\\n') which creates empty string if file ends with newline
-print("[INFO] Converting metadata.csv to metadata.txt...")
-csv_path = r"{metadata_csv}"
-txt_path = r"{metadata_txt}"
-lines = []
-with open(csv_path, 'r', encoding='utf-8') as f_in:
-    for line in f_in:
-        line = line.strip()
-        # Skip empty lines
-        if not line:
-            continue
-        # LJSpeech CSV format: id|text|normalized_text
-        # Soprano-Factory format: id|text
-        parts = line.split('|')
-        if len(parts) >= 2:
-            # Use the normalized text (3rd column) if available, else raw text
-            text = parts[2] if len(parts) >= 3 else parts[1]
-            lines.append(f"{{parts[0]}}|{{text}}")
-
-# Write without trailing newline to avoid empty string in split('\\n')
-with open(txt_path, 'w', encoding='utf-8') as f_out:
-    f_out.write('\\n'.join(lines))
-print(f"[INFO] Metadata converted! ({{len(lines)}} entries)")
-'''
-    
-    # Get user's hyperparameters from config
-    epochs = config.get("epochs", 20)
-    # LoRA can use higher learning rates (5e-5), full fine-tune needs lower (2e-5)
-    learning_rate = config.get("learning_rate", 5e-5)
-    batch_size = config.get("batch_size", 4)
-    gradient_accumulation = config.get("gradient_accumulation", 1)
-    warmup_steps = config.get("warmup_steps", 100)
-    save_every = config.get("save_every", 10)
-    
-    # LoRA settings - HIGHLY RECOMMENDED for Soprano
-    # Full fine-tuning destroys the hidden state distribution that the decoder expects
-    use_lora = config.get("use_lora", True)
-    lora_rank = config.get("lora_rank", 32)
-    lora_alpha = config.get("lora_alpha", 64)
-    lora_dropout = config.get("lora_dropout", 0.05)
-    
-    # PRE-CREATE the patched train.py OUTSIDE the f-string to avoid escaping hell
-    # Read original train.py and apply all patches here
-    original_train_py = os.path.join(factory_dir, "train.py")
-    with open(original_train_py, 'r', encoding='utf-8') as f:
-        patched_code = f.read()
-    
-    # Patch 1: Use correct model (Soprano-1.1-80M instead of Soprano-80M)
-    patched_code = patched_code.replace("'ekwek/Soprano-80M'", "'ekwek/Soprano-1.1-80M'")
-    patched_code = patched_code.replace('"ekwek/Soprano-80M"', '"ekwek/Soprano-1.1-80M"')
-    
-    # Patch 2: Add sys.path for imports
-    sys_path_insert = f'import sys; sys.path.insert(0, r"{factory_dir}")\n'
-    if patched_code.startswith('"""'):
-        end_docstring = patched_code.find('"""', 3) + 3
-        patched_code = patched_code[:end_docstring] + '\n' + sys_path_insert + patched_code[end_docstring:]
-    else:
-        patched_code = sys_path_insert + patched_code
-    
-    # Patch 3: Hyperparameters
-    import re
-    patched_code = re.sub(r'^max_lr = .*$', f'max_lr = {learning_rate}', patched_code, flags=re.MULTILINE)
-    patched_code = re.sub(r'^batch_size = .*$', f'batch_size = {batch_size}', patched_code, flags=re.MULTILINE)
-    patched_code = re.sub(r'^grad_accum_steps = .*$', f'grad_accum_steps = {gradient_accumulation}', patched_code, flags=re.MULTILINE)
-    
-    # Patch 4: LoRA support
-    if use_lora:
-        # Add LoRA import
-        patched_code = patched_code.replace(
-            "from transformers import AutoModelForCausalLM, AutoTokenizer",
-            "from transformers import AutoModelForCausalLM, AutoTokenizer\nfrom peft import LoraConfig, get_peft_model, TaskType"
-        )
-        
-        # Add LoRA setup after model.train() in main block (not in evaluate())
-        lora_setup = f'''
-    # Apply LoRA - preserves base model hidden state distribution
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r={lora_rank},
-        lora_alpha={lora_alpha},
-        lora_dropout={lora_dropout},
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        bias="none",
-    )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
-
-'''
-        patched_code = patched_code.replace(
-            "model.train()\n\n    # dataset",
-            "model.train()" + lora_setup + "    # dataset"
-        )
-        
-        # Add LoRA merge before save
-        lora_merge = '''
-    # Merge LoRA weights into base model
-    print("Merging LoRA weights...")
-    model = model.merge_and_unload()
-    print("LoRA merged!")
-'''
-        patched_code = patched_code.replace(
-            "model.save_pretrained(save_path)",
-            lora_merge + "    model.save_pretrained(save_path)"
-        )
-    
-    # Write patched train.py to output directory
-    patched_train_path = os.path.join(output_dir, "train_patched.py")
-    with open(patched_train_path, 'w', encoding='utf-8') as f:
-        f.write(patched_code)
-    
-    # Create a wrapper script that:
-    # 1. Converts metadata if needed
-    # 2. Runs generate_dataset.py to preprocess the dataset  
-    # 3. Patches train.py hyperparameters with user settings
-    # 4. Runs train.py to train the model
-    train_wrapper = f'''
-import sys
-import os
-import subprocess
-import json
-import math
-
-factory_dir = r"{factory_dir}"
-dataset_path = r"{dataset_path}"
-output_dir = r"{output_dir}"
-
-# User's hyperparameters
-user_epochs = {epochs}
-user_lr = {learning_rate}
-user_batch_size = {batch_size}
-user_grad_accum = {gradient_accumulation}
-user_warmup_steps = {warmup_steps}
-user_save_every = {save_every}
-
-# LoRA settings
-use_lora = {use_lora}
-lora_rank = {lora_rank}
-lora_alpha = {lora_alpha}
-lora_dropout = {lora_dropout}
-
-print("[INFO] ========================================")
-print("[INFO] Soprano-Factory Training" + (" (LoRA)" if use_lora else " (Full)"))
-print("[INFO] ========================================")
-print(f"[INFO] Dataset: {{dataset_path}}")
-print(f"[INFO] Output: {{output_dir}}")
-print(f"[INFO] Epochs: {{user_epochs}}")
-print(f"[INFO] Learning Rate: {{user_lr}}")
-print(f"[INFO] Batch Size: {{user_batch_size}}")
-print(f"[INFO] Gradient Accumulation: {{user_grad_accum}}")
-if use_lora:
-    print(f"[INFO] LoRA Rank: {{lora_rank}}, Alpha: {{lora_alpha}}, Dropout: {{lora_dropout}}")
-print()
-
-{convert_metadata_code}
-
-# Step 1: Preprocess dataset using generate_dataset.py
-print("[INFO] Step 1/2: Preprocessing dataset...")
-print("[INFO] Running generate_dataset.py...")
-
-result = subprocess.run(
-    [sys.executable, os.path.join(factory_dir, "generate_dataset.py"), 
-     "--input-dir", dataset_path],
-    cwd=factory_dir,
-    capture_output=False
-)
-
-if result.returncode != 0:
-    print(f"[ERROR] Dataset preprocessing failed with code {{result.returncode}}")
-    sys.exit(1)
-
-print("[INFO] Dataset preprocessing complete!")
-print()
-
-# Count training samples to calculate max_steps
-train_json = os.path.join(dataset_path, "train.json")
-with open(train_json, 'r', encoding='utf-8') as f:
-    train_data = json.load(f)
-num_samples = len(train_data)
-
-# Calculate max_steps based on epochs
-# Simple: steps_per_epoch = ceil(samples / batch_size)
-# With gradient accumulation: effective_batch = batch_size * grad_accum
-effective_batch = user_batch_size * user_grad_accum
-steps_per_epoch = (num_samples + effective_batch - 1) // effective_batch  # ceiling division
-max_steps = steps_per_epoch * user_epochs
-
-# Minimum of 10 steps to avoid errors, but otherwise respect user's epoch setting
-max_steps = max(10, max_steps)
-
-# Warmup ratio - user's warmup_steps as fraction of total, capped at 10%
-warmup_ratio = min(0.1, user_warmup_steps / max(1, max_steps)) if max_steps > 0 else 0.05
-
-# Validation frequency - validate every save_every epochs worth of steps
-val_freq = max(1, steps_per_epoch * user_save_every)
-
-print(f"[INFO] Training samples: {{num_samples}}")
-print(f"[INFO] Steps per epoch: {{steps_per_epoch}}")
-print(f"[INFO] Total training steps: {{max_steps}} ({{user_epochs}} epochs)")
-print(f"[INFO] Validation every {{val_freq}} steps")
-print()
-
-# Step 2: Run training with pre-patched train.py
-print("[INFO] Step 2/2: Training model...")
-
-# The train_patched.py was pre-created with LoRA/model patches
-# We just need to patch the dynamic hyperparameters (max_steps, etc.)
-patched_train_py = os.path.join(output_dir, "train_patched.py")
-with open(patched_train_py, 'r', encoding='utf-8') as f:
-    train_code = f.read()
-
-import re
-# Patch dynamic hyperparameters that depend on dataset size
-train_code = re.sub(r'^max_steps = .*$', f'max_steps = {{max_steps}}', train_code, flags=re.MULTILINE)
-train_code = re.sub(r'^warmup_ratio = .*$', f'warmup_ratio = {{warmup_ratio}}', train_code, flags=re.MULTILINE)
-train_code = re.sub(r'^val_freq = .*$', f'val_freq = {{val_freq}}', train_code, flags=re.MULTILINE)
-
-with open(patched_train_py, 'w', encoding='utf-8') as f:
-    f.write(train_code)
-
-if use_lora:
-    print(f"[INFO] LoRA enabled (rank={{lora_rank}}, alpha={{lora_alpha}})")
-print(f"[INFO] Running training script: {{patched_train_py}}")
-print("[INFO] Running training...")
-
-result = subprocess.run(
-    [sys.executable, patched_train_py,
-     "--input-dir", dataset_path,
-     "--save-dir", output_dir],
-    cwd=factory_dir,
-    capture_output=False
-)
-
-if result.returncode != 0:
-    print(f"[ERROR] Training failed with code {{result.returncode}}")
-    sys.exit(1)
-
-print()
-print("[INFO] ========================================")
-print("[INFO] Soprano-Factory Training Complete!")
-print("[INFO] ========================================")
-print(f"[INFO] Your trained model is at: {{output_dir}}")
-
-# Copy required files from base Soprano model (required for inference)
-# soprano-factory's save_pretrained() may save incorrect config values
-import shutil
-base_model_dir = os.path.join(os.path.dirname(factory_dir), "models", "soprano")
-
-# First, fix config.json - the training may have saved wrong max_position_embeddings
-base_config = os.path.join(base_model_dir, "config.json")
-if os.path.exists(base_config):
-    custom_config = os.path.join(output_dir, "config.json")
-    shutil.copy2(base_config, custom_config)
-    print(f"[INFO] Copied correct config.json from base model (fixes max_position_embeddings)")
-# Also check HuggingFace cache
-hf_cache_dir = os.path.join(factory_dir, "..", "models", "soprano", "hub", "models--ekwek--Soprano-1.1-80M", "snapshots")
-
-decoder_copied = False
-
-# Try to find decoder.pth from various locations
-decoder_sources = [
-    os.path.join(base_model_dir, "decoder.pth"),
-    os.path.join(os.path.dirname(factory_dir), "..", "models", "soprano", "decoder.pth"),
-]
-
-# Add HF cache snapshots if they exist
-if os.path.exists(hf_cache_dir):
-    for snapshot in os.listdir(hf_cache_dir):
-        decoder_sources.append(os.path.join(hf_cache_dir, snapshot, "decoder.pth"))
-
-for decoder_src in decoder_sources:
-    if os.path.exists(decoder_src):
-        decoder_dst = os.path.join(output_dir, "decoder.pth")
-        if not os.path.exists(decoder_dst):
-            shutil.copy2(decoder_src, decoder_dst)
-            print(f"[INFO] Copied decoder.pth from {{decoder_src}}")
-        decoder_copied = True
-        break
-
-if not decoder_copied:
-    print("[WARN] Could not find decoder.pth - you may need to copy it manually from the base Soprano model")
-    print("[WARN] The custom model may not work for inference without decoder.pth")
-
-print("[INFO] You can now use this model with the Soprano server by selecting it from the model list.")
-'''
-    
-    script_path = os.path.join(output_dir, "train_soprano.py")
-    with open(script_path, "w") as f:
-        f.write(train_wrapper)
-    
-    # Run training in conda environment
-    await run_conda_script(job, env_name, script_path, "soprano")
-    
-    job.output_model_path = output_dir
 
 
 async def run_chatterbox_training(job: TrainingJob):
@@ -1000,28 +642,6 @@ async def get_status():
     }
 
 
-@app.post("/v1/soprano/train")
-async def start_soprano_training(request: SopranoTrainRequest, background_tasks: BackgroundTasks):
-    """Start Soprano-Factory training job."""
-    job_id = str(uuid.uuid4())[:8]
-    
-    job = TrainingJob(
-        job_id=job_id,
-        backend="soprano",
-        status=JobStatus.PENDING,
-        config=request.model_dump(),
-        created_at=datetime.now().isoformat()
-    )
-    
-    with job_lock:
-        jobs[job_id] = job
-    
-    # Start training in background
-    background_tasks.add_task(run_training_process, job)
-    
-    return {"job_id": job_id, "status": "pending", "message": "Soprano training job created"}
-
-
 @app.post("/v1/chatterbox/train")
 async def start_chatterbox_training(request: ChatterboxTrainRequest, background_tasks: BackgroundTasks):
     """Start Chatterbox fine-tuning job."""
@@ -1116,8 +736,7 @@ async def cancel_job(job_id: str):
 
 @app.get("/v1/datasets")
 async def list_datasets():
-    """List available datasets. Both Soprano and Chatterbox use LJSpeech format,
-    so all datasets are available for both backends."""
+    """List available datasets for Chatterbox training (LJSpeech format)."""
     all_datasets = []
     seen_names = set()
     
@@ -1166,19 +785,14 @@ async def list_datasets():
     logger.info(f"Found {len(all_datasets)} datasets so far")
     
     # Also scan backend-specific subdirs for backwards compatibility
-    for backend in ["soprano", "chatterbox"]:
-        backend_dir = os.path.join(DATASETS_DIR, backend)
-        scan_dataset_dir(backend_dir)
+    chatterbox_backend_dir = os.path.join(DATASETS_DIR, "chatterbox")
+    scan_dataset_dir(chatterbox_backend_dir)
     
     # Also scan training directories for existing datasets
     chatterbox_training_dir = os.path.join(TRAINING_DIR, "chatterbox-finetuning")
     scan_dataset_dir(chatterbox_training_dir)
     
-    soprano_training_dir = os.path.join(TRAINING_DIR, "soprano-factory")
-    scan_dataset_dir(soprano_training_dir)
-    
-    # Return same list for both backends since LJSpeech format works for both
-    return {"soprano": all_datasets, "chatterbox": all_datasets}
+    return {"chatterbox": all_datasets}
 
 
 @app.post("/v1/datasets/validate")
@@ -1677,18 +1291,7 @@ async def delete_dataset(backend: str, name: str):
 @app.get("/v1/models")
 async def list_custom_models():
     """List custom trained models."""
-    models = {"soprano": [], "chatterbox": []}
-    
-    # Soprano models
-    if os.path.exists(SOPRANO_CUSTOM_DIR):
-        for name in os.listdir(SOPRANO_CUSTOM_DIR):
-            model_path = os.path.join(SOPRANO_CUSTOM_DIR, name)
-            if os.path.isdir(model_path):
-                models["soprano"].append({
-                    "name": name,
-                    "path": model_path,
-                    "created": datetime.fromtimestamp(os.path.getctime(model_path)).isoformat()
-                })
+    models = {"chatterbox": []}
     
     # Chatterbox models
     if os.path.exists(CHATTERBOX_CUSTOM_DIR):

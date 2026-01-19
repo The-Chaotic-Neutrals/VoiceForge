@@ -1,5 +1,6 @@
 @echo off
-cd /d "%~dp0..\.."
+:: Pocket TTS server launcher
+cd /d "%~dp0.."
 
 :: Find conda base directory
 set "CONDA_BASE="
@@ -22,20 +23,21 @@ if not defined CONDA_BASE (
     exit /b 1
 )
 
-call "%CONDA_BASE%\Scripts\activate.bat" "soprano"
+call "%CONDA_BASE%\Scripts\activate.bat" "pocket_tts"
 if errorlevel 1 (
-    echo [ERROR] Failed to activate Soprano environment
-    echo [INFO] Run Voice_Forge.bat ^> Utilities ^> Install All to setup the environment
+    echo [ERROR] Failed to activate Pocket TTS environment
     pause
     exit /b 1
 )
 
-echo [INFO] Starting Soprano server...
+echo [INFO] Starting Pocket TTS server...
 echo.
 
-python -X faulthandler -u app\servers\soprano_server.py --port 8894
+:: Run from the servers folder
+cd /d "%~dp0..\servers"
+python -X faulthandler -u pocket_tts_server.py --port 8894
 if errorlevel 1 (
-    echo [ERROR] Soprano server crashed!
+    echo [ERROR] Pocket TTS server crashed!
     pause
 )
 pause

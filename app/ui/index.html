@@ -124,16 +124,40 @@
                         <div class="input-hint">Streaming starts playback faster for long text</div>
                     </div>
 
+                    <!-- TTS Backend Selection -->
                     <div class="form-group">
                         <label for="tts-backend" class="label-with-help">
                             TTS Backend
-                            <span class="help-icon" title="Select which TTS engine to use. Chatterbox supports voice cloning; Soprano is lightweight and fast.">?</span>
+                            <span class="help-icon" title="Select TTS engine. Chatterbox offers voice cloning with prompt audio. Pocket TTS is lightweight with built-in voices.">?</span>
                         </label>
-                        <select id="tts-backend" aria-label="TTS backend" onchange="updateTTSBackendUI()">
-                            <option value="chatterbox">Chatterbox</option>
-                            <option value="soprano">Soprano</option>
+                        <select id="tts-backend" onchange="updateTTSBackendVisibility()">
+                            <option value="chatterbox">Chatterbox (Voice Cloning)</option>
+                            <option value="pocket_tts">Pocket TTS (Lightweight)</option>
                         </select>
-                        <div class="input-hint">Chatterbox = voice cloning | Soprano = fast TTS</div>
+                    </div>
+
+                    <!-- Pocket TTS Voice Selection (shown when Pocket TTS selected) -->
+                    <div class="form-group" id="pocket-tts-settings" style="display: none;">
+                        <label for="pocket-tts-voice" class="label-with-help">
+                            Voice
+                            <span class="help-icon" title="Select a built-in voice preset, or enter a file path to clone from your own audio.">?</span>
+                        </label>
+                        <div class="form-row" style="gap: 8px; align-items: center;">
+                            <select id="pocket-tts-voice-preset" style="flex: 1;" onchange="updatePocketTTSVoice(this.value)">
+                                <option value="alba">Alba (Female, Casual)</option>
+                                <option value="marius">Marius (Male)</option>
+                                <option value="javert">Javert (Male)</option>
+                                <option value="jean">Jean (Male)</option>
+                                <option value="fantine">Fantine (Female)</option>
+                                <option value="cosette">Cosette (Female)</option>
+                                <option value="eponine">Eponine (Female)</option>
+                                <option value="azelma">Azelma (Female)</option>
+                                <option value="custom">Custom (File Path)...</option>
+                            </select>
+                        </div>
+                        <input type="text" id="pocket-tts-voice-path" placeholder="Path to audio file for voice cloning..." style="display: none; margin-top: 8px;">
+                        <input type="hidden" id="pocket-tts-voice" value="alba">
+                        <div class="input-hint">Built-in voices or custom audio for cloning</div>
                     </div>
 
                     <div class="form-group" id="chatterbox-model-section">
@@ -148,38 +172,6 @@
                             <button type="button" class="btn btn-secondary btn-sm" onclick="refreshChatterboxModels()" title="Refresh model list">↻</button>
                         </div>
                         <div class="input-hint">Custom models trained in the Training tab will appear here</div>
-                    </div>
-
-                    <div id="soprano-settings" style="display: none;">
-                        <div class="form-group">
-                            <label for="soprano-model" class="label-with-help">
-                                Soprano Model
-                                <span class="help-icon" title="Select which Soprano model to use. 'Default' uses the base pretrained model. Custom models are trained via the Training tab.">?</span>
-                            </label>
-                            <div class="form-row" style="gap: 8px; align-items: center;">
-                                <select id="soprano-model" aria-label="Soprano model" style="flex: 1;">
-                                    <option value="">Default (Base Model)</option>
-                                </select>
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="refreshSopranoModels()" title="Refresh model list">↻</button>
-                            </div>
-                            <div class="input-hint">Custom models trained in the Training tab will appear here</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="label-with-help">
-                                Soprano Sampling
-                                <span class="help-icon" title="Soprano sampling settings. Higher temperature = more varied output. Lower = more consistent. Repetition penalty helps avoid loops.">?</span>
-                            </label>
-                            <div class="form-row" style="align-items: center; gap: 10px;">
-                                <label for="soprano-temperature" style="min-width: 90px;">Temperature</label>
-                                <input type="number" id="soprano-temperature" value="0.7" min="0.01" max="2" step="0.01" aria-label="Soprano temperature">
-                                <label for="soprano-top-p" style="min-width: 60px;">Top P</label>
-                                <input type="number" id="soprano-top-p" value="0.95" min="0.01" max="1" step="0.01" aria-label="Soprano top p">
-                                <label for="soprano-repetition-penalty" style="min-width: 130px;">Repetition</label>
-                                <input type="number" id="soprano-repetition-penalty" value="1.2" min="0.8" max="2" step="0.05" aria-label="Soprano repetition penalty">
-                            </div>
-                            <div class="input-hint">Soprano uses a fixed voice (no cloning). Lower temp (0.3) = consistent, higher (0.7+) = varied</div>
-                        </div>
                     </div>
                     
                     <div class="form-group">
@@ -1214,17 +1206,11 @@
                 <div class="card-section">
                     <div class="section-header">TTS Model Training</div>
                     <p style="color: var(--text-muted); margin-bottom: 16px;">
-                        Fine-tune TTS models with your own voice data. Create custom voices for Soprano or Chatterbox.
+                        Fine-tune Chatterbox TTS models with your own voice data. Create custom voices with audio prompts.
                     </p>
                     
-                    <div class="form-group">
-                        <label>Training Backend</label>
-                        <select id="training-backend" class="form-control" onchange="updateTrainingUI()">
-                            <option value="soprano">Soprano (Fast, lightweight)</option>
-                            <option value="chatterbox">Chatterbox (Voice cloning)</option>
-                        </select>
-                        <div class="input-hint" id="training-backend-hint">Soprano: 80M params, very fast. Chatterbox: Full voice cloning with audio prompts.</div>
-                    </div>
+                    <!-- Hidden field to maintain API compatibility -->
+                    <input type="hidden" id="training-backend" value="chatterbox">
                 </div>
                 
                 <!-- Dataset Section -->
@@ -1307,76 +1293,8 @@
                     </div>
                 </div>
                 
-                <!-- Soprano Training Config -->
-                <div class="card-section" style="margin-top: 20px;" id="soprano-training-config">
-                    <div class="section-header">Soprano Training Configuration</div>
-                    
-                    <div class="form-group">
-                        <label>Model Name</label>
-                        <input type="text" id="soprano-model-name" class="form-control" placeholder="my_custom_voice" value="my_soprano_voice">
-                        <div class="input-hint">Name for the output model (used in TTS backend selection)</div>
-                    </div>
-                    
-                    <div class="form-row" style="gap: 20px;">
-                        <div class="form-group" style="flex: 1;">
-                            <label>Epochs</label>
-                            <input type="number" id="soprano-epochs" class="form-control" value="20" min="1" max="1000">
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>Learning Rate</label>
-                            <input type="text" id="soprano-lr" class="form-control" value="5e-5" placeholder="e.g. 1e-4, 5e-5">
-                            <div class="input-hint">Scientific notation (e.g. 5e-5 = 0.00005)</div>
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>Batch Size</label>
-                            <input type="number" id="soprano-batch-size" class="form-control" value="4" min="1" max="32">
-                        </div>
-                    </div>
-                    
-                    <div class="form-row" style="gap: 20px;">
-                        <div class="form-group" style="flex: 1;">
-                            <label>Save Every N Epochs</label>
-                            <input type="number" id="soprano-save-every" class="form-control" value="10" min="1" max="100">
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>Warmup Steps</label>
-                            <input type="number" id="soprano-warmup" class="form-control" value="100" min="0" max="1000">
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>Gradient Accumulation</label>
-                            <input type="number" id="soprano-grad-accum" class="form-control" value="1" min="1" max="64">
-                        </div>
-                    </div>
-                    
-                    <!-- LoRA Settings -->
-                    <div class="form-group" style="margin-top: 15px;">
-                        <label class="toggle-label">
-                            <input type="checkbox" id="soprano-use-lora" checked>
-                            <span>Use LoRA (Recommended)</span>
-                            <span class="help-icon" title="LoRA preserves voice quality by only training ~2% of parameters. Highly recommended for fine-tuning.">?</span>
-                        </label>
-                    </div>
-                    
-                    <div class="form-row" style="gap: 20px;" id="soprano-lora-settings">
-                        <div class="form-group" style="flex: 1;">
-                            <label>LoRA Rank</label>
-                            <input type="number" id="soprano-lora-rank" class="form-control" value="32" min="4" max="256" step="4">
-                            <div class="input-hint">Higher = more capacity (16-64 typical)</div>
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>LoRA Alpha</label>
-                            <input type="number" id="soprano-lora-alpha" class="form-control" value="64" min="4" max="512" step="4">
-                            <div class="input-hint">Usually 2x rank</div>
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>LoRA Dropout</label>
-                            <input type="number" id="soprano-lora-dropout" class="form-control" value="0.05" min="0" max="0.5" step="0.01">
-                        </div>
-                    </div>
-                </div>
-                
                 <!-- Chatterbox Training Config -->
-                <div class="card-section" style="margin-top: 20px; display: none;" id="chatterbox-training-config">
+                <div class="card-section" style="margin-top: 20px;" id="chatterbox-training-config">
                     <div class="section-header">Chatterbox Training Configuration</div>
                     
                     <div class="form-group">
@@ -1485,13 +1403,6 @@
                 <!-- Trained Models -->
                 <div class="card-section" style="margin-top: 20px;">
                     <div class="section-header">Trained Models</div>
-                    
-                    <div class="form-group">
-                        <label>Custom Soprano Models</label>
-                        <div id="soprano-models-list" style="color: var(--text-muted);">
-                            No custom Soprano models found.
-                        </div>
-                    </div>
                     
                     <div class="form-group">
                         <label>Custom Chatterbox Models</label>
@@ -1670,8 +1581,18 @@
         function collectTTSRequest() {
             const text = document.getElementById('text-input')?.value.trim() || '';
             const ttsBackend = getElementValue('tts-backend') || 'chatterbox';
-            const chatterboxModel = ttsBackend === 'chatterbox' ? (getElementValue('chatterbox-model') || null) : null;
-            const sopranoModel = ttsBackend === 'soprano' ? (getElementValue('soprano-model') || null) : null;
+            const chatterboxModel = getElementValue('chatterbox-model') || null;
+            
+            // Get Pocket TTS voice (use path input if custom, otherwise preset)
+            let pocketTTSVoice = 'alba';
+            const presetValue = getElementValue('pocket-tts-voice-preset');
+            if (presetValue === 'custom') {
+                const pathInput = document.getElementById('pocket-tts-voice-path');
+                pocketTTSVoice = pathInput?.value?.trim() || 'alba';
+            } else {
+                pocketTTSVoice = presetValue || 'alba';
+            }
+            
             return {
                 input: text,
                 rvc_model: getElementChecked('enable-rvc') ? getElementValue('model-select') : null,
@@ -1681,7 +1602,7 @@
                 tts_mode: getElementValue('tts-mode') || 'chunked',
                 tts_backend: ttsBackend,
                 chatterbox_model: chatterboxModel,
-                soprano_model: sopranoModel,
+                pocket_tts_voice: pocketTTSVoice,
                 tts_batch_tokens: parseInt(getElementValue('tts-batch-tokens')) || 50,
                 tts_token_method: document.querySelector('input[name="token-method"]:checked')?.value || 'tiktoken',
                 pitch_algo: getElementValue('pitch-algo') || 'rmvpe+',
@@ -1725,10 +1646,7 @@
                 server_mix_background: true,  // Mix background on server for streaming
                 output_volume: parseFloat(getElementValue('output-volume')) || 1.0,
                 chatterbox_seed: parseInt(getElementValue('chatterbox-seed')) || 0,
-                save_output: getElementChecked('save-output'),
-                soprano_temperature: ttsBackend === 'soprano' ? getFloatValue('soprano-temperature', 0.7) : null,
-                soprano_top_p: ttsBackend === 'soprano' ? getFloatValue('soprano-top-p', 0.95) : null,
-                soprano_repetition_penalty: ttsBackend === 'soprano' ? getFloatValue('soprano-repetition-penalty', 1.2) : null
+                save_output: getElementChecked('save-output')
             };
         }
         
@@ -2032,26 +1950,42 @@
         })();
 
         function updateTTSBackendVisibility() {
-            const backend = getElementValue('tts-backend') || 'chatterbox';
-            const isSoprano = backend === 'soprano';
+            const backend = document.getElementById('tts-backend')?.value || 'chatterbox';
             const isChatterbox = backend === 'chatterbox';
+            const isPocketTTS = backend === 'pocket_tts';
             
-            // Show Soprano settings only for Soprano backend
-            const sopranoSection = document.getElementById('soprano-settings');
-            if (sopranoSection) {
-                sopranoSection.style.display = isSoprano ? 'block' : 'none';
-            }
-            
-            // Show voice cloning section only for Chatterbox backend
+            // Chatterbox sections
             const voiceCloningSection = document.getElementById('chatterbox-voice-cloning-section');
             if (voiceCloningSection) {
                 voiceCloningSection.style.display = isChatterbox ? 'block' : 'none';
             }
             
-            // Show Chatterbox model section only for Chatterbox backend
             const chatterboxModelSection = document.getElementById('chatterbox-model-section');
             if (chatterboxModelSection) {
                 chatterboxModelSection.style.display = isChatterbox ? 'block' : 'none';
+            }
+            
+            // Pocket TTS sections
+            const pocketTTSSettings = document.getElementById('pocket-tts-settings');
+            if (pocketTTSSettings) {
+                pocketTTSSettings.style.display = isPocketTTS ? 'block' : 'none';
+            }
+        }
+        
+        function updatePocketTTSVoice(value) {
+            const voiceInput = document.getElementById('pocket-tts-voice');
+            const pathInput = document.getElementById('pocket-tts-voice-path');
+            
+            if (value === 'custom') {
+                // Show path input for custom voice
+                if (pathInput) {
+                    pathInput.style.display = 'block';
+                    pathInput.focus();
+                }
+            } else {
+                // Use preset voice
+                if (pathInput) pathInput.style.display = 'none';
+                if (voiceInput) voiceInput.value = value;
             }
         }
         
@@ -2126,71 +2060,6 @@
             }
         }
         
-        async function refreshSopranoModels() {
-            const select = document.getElementById('soprano-model');
-            if (!select) return;
-            
-            // Keep current selection
-            const currentValue = select.value;
-            
-            // Clear existing options except default
-            select.innerHTML = '<option value="">Default (Base Model)</option>';
-            
-            let sopranoModels = [];
-            
-            // Try training server first
-            try {
-                const res = await fetch(`${TRAINING_SERVER_URL}/v1/models`);
-                if (res.ok) {
-                    const data = await res.json();
-                    sopranoModels = data.soprano || [];
-                }
-            } catch (e) {
-                console.log('Training server not available, trying Soprano server...');
-            }
-            
-            // Fallback to Soprano server if no models found
-            if (sopranoModels.length === 0) {
-                try {
-                    const res = await fetch(`${SOPRANO_URL}/v1/models`);
-                    if (res.ok) {
-                        const data = await res.json();
-                        // Soprano server returns models in a different format
-                        const customModels = (data.models || []).filter(m => m.type === 'custom' && m.valid);
-                        sopranoModels = customModels.map(m => ({
-                            name: m.name,
-                            path: m.path
-                        }));
-                    }
-                } catch (e) {
-                    console.log('Could not fetch models from Soprano server:', e);
-                }
-            }
-            
-            // Add models to dropdown
-            if (sopranoModels.length > 0) {
-                const optgroup = document.createElement('optgroup');
-                optgroup.label = 'Custom Trained Models';
-                
-                sopranoModels.forEach(model => {
-                    const option = document.createElement('option');
-                    option.value = model.name;
-                    option.textContent = model.name;
-                    optgroup.appendChild(option);
-                });
-                
-                select.appendChild(optgroup);
-            }
-            
-            // Restore selection if still valid
-            if (currentValue) {
-                const options = Array.from(select.options);
-                if (options.some(o => o.value === currentValue)) {
-                    select.value = currentValue;
-                }
-            }
-        }
-
         const ttsBackendSelect = document.getElementById('tts-backend');
         if (ttsBackendSelect) {
             ttsBackendSelect.addEventListener('change', updateTTSBackendVisibility);
@@ -2242,7 +2111,6 @@
             
             // Load custom model lists after initialization (servers should be ready by now)
             await refreshChatterboxModels();
-            await refreshSopranoModels();
         });
 
         // Keyboard shortcuts
@@ -2549,14 +2417,21 @@
 
             // Check prompt audio requirement for Chatterbox (voice cloning)
             const ttsBackend = getElementValue('tts-backend') || 'chatterbox';
-            const promptAudioInput = document.getElementById('chatterbox-prompt-audio');
-            const hasNewFile = promptAudioInput && promptAudioInput.files && promptAudioInput.files.length > 0;
-            const hasSavedPath = window.lastChatterboxPromptPath;
             
-            // Soprano doesn't need prompt audio - it uses a fixed voice
-            if (ttsBackend === 'chatterbox' && !hasNewFile && !hasSavedPath) {
-                showToast('Voice cloning requires a prompt audio file (5+ seconds minimum, 10+ recommended)', 'warn');
-                return;
+            // Pocket TTS doesn't require prompt audio (uses built-in voices or custom path)
+            if (ttsBackend === 'pocket_tts') {
+                // No prompt audio validation needed for Pocket TTS
+            } else {
+                // Chatterbox requires prompt audio
+                const promptAudioInput = document.getElementById('chatterbox-prompt-audio');
+                const hasNewFile = promptAudioInput && promptAudioInput.files && promptAudioInput.files.length > 0;
+                const hasSavedPath = window.lastChatterboxPromptPath;
+                
+                // Voice cloning requires prompt audio
+                if (!hasNewFile && !hasSavedPath) {
+                    showToast('Voice cloning requires a prompt audio file (5+ seconds minimum, 10+ recommended)', 'warn');
+                    return;
+                }
             }
 
             const generateBtn = document.getElementById('generate-btn');
@@ -2579,50 +2454,35 @@
             // Collect all parameters using unified collection function
             const params = collectTTSRequest();
             
-            // Switch Chatterbox model if needed
-            if (ttsBackend === 'chatterbox' && params.chatterbox_model) {
-                statusEl.textContent = 'Switching to custom model...';
-                try {
-                    await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=${encodeURIComponent(params.chatterbox_model)}`, {
-                        method: 'POST'
-                    });
-                } catch (e) {
-                    console.warn('Model switch failed, using current model:', e);
-                }
-            } else if (ttsBackend === 'chatterbox' && !params.chatterbox_model) {
-                // Ensure default model is loaded
-                try {
-                    await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=default`, {
-                        method: 'POST'
-                    });
-                } catch (e) {
-                    // Ignore - default is probably already loaded
-                }
-            }
-            
-            // Switch Soprano model if needed
-            if (ttsBackend === 'soprano' && params.soprano_model) {
-                statusEl.textContent = 'Switching to custom model...';
-                try {
-                    await fetch(`${SOPRANO_URL}/v1/models/switch?model_name=${encodeURIComponent(params.soprano_model)}`, {
-                        method: 'POST'
-                    });
-                } catch (e) {
-                    console.warn('Model switch failed, using current model:', e);
-                }
-            } else if (ttsBackend === 'soprano' && !params.soprano_model) {
-                // Ensure default model is loaded
-                try {
-                    await fetch(`${SOPRANO_URL}/v1/models/switch?model_name=default`, {
-                        method: 'POST'
-                    });
-                } catch (e) {
-                    // Ignore - default is probably already loaded
+            // Switch Chatterbox model if needed (only for Chatterbox backend)
+            if (ttsBackend === 'chatterbox') {
+                if (params.chatterbox_model) {
+                    statusEl.textContent = 'Switching to custom model...';
+                    try {
+                        await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=${encodeURIComponent(params.chatterbox_model)}`, {
+                            method: 'POST'
+                        });
+                    } catch (e) {
+                        console.warn('Model switch failed, using current model:', e);
+                    }
+                } else {
+                    // Ensure default model is loaded
+                    try {
+                        await fetch(`${CHATTERBOX_URL}/v1/models/switch?model_name=default`, {
+                            method: 'POST'
+                        });
+                    } catch (e) {
+                        // Ignore - default is probably already loaded
+                    }
                 }
             }
             
             // Handle prompt audio upload for voice cloning (Chatterbox only)
             if (ttsBackend === 'chatterbox') {
+                const promptAudioInput = document.getElementById('chatterbox-prompt-audio');
+                const hasNewFile = promptAudioInput && promptAudioInput.files && promptAudioInput.files.length > 0;
+                const hasSavedPath = window.lastChatterboxPromptPath;
+                
                 if (hasNewFile) {
                     // Upload new prompt audio file
                     const formData = new FormData();
@@ -2653,7 +2513,6 @@
                     params.chatterbox_prompt_audio = hasSavedPath;
                 }
             }
-            // Soprano doesn't need prompt audio - it uses a fixed voice
 
             try {
                 console.log('[Generate] Sending params:', JSON.stringify(params, null, 2));
@@ -5305,7 +5164,6 @@
         
         const TRAINING_SERVER_URL = 'http://127.0.0.1:8895';
         const CHATTERBOX_URL = 'http://127.0.0.1:8893';
-        const SOPRANO_URL = 'http://127.0.0.1:8894';
         let trainingWebSocket = null;
         let currentTrainingJobId = null;
         let trainingPollInterval = null;
@@ -5400,41 +5258,14 @@
             }
         }
         
-        // Update UI based on selected training backend
+        // Update UI based on selected training backend (only chatterbox now)
         function updateTrainingUI() {
-            const backend = document.getElementById('training-backend').value;
-            const sopranoConfig = document.getElementById('soprano-training-config');
+            // Chatterbox is the only option now
             const chatterboxConfig = document.getElementById('chatterbox-training-config');
-            const hint = document.getElementById('training-backend-hint');
-            
-            if (backend === 'soprano') {
-                sopranoConfig.style.display = 'block';
-                chatterboxConfig.style.display = 'none';
-                hint.textContent = 'Soprano: 80M params, very fast training. Creates a custom voice model.';
-            } else {
-                sopranoConfig.style.display = 'none';
+            if (chatterboxConfig) {
                 chatterboxConfig.style.display = 'block';
-                hint.textContent = 'Chatterbox: Full voice cloning with audio prompts. Supports both Standard (Llama) and Turbo (GPT-2) modes.';
             }
         }
-        
-        // Toggle LoRA settings visibility
-        function toggleLoraSettings() {
-            const useLoraCheckbox = document.getElementById('soprano-use-lora');
-            const loraSettings = document.getElementById('soprano-lora-settings');
-            if (useLoraCheckbox && loraSettings) {
-                loraSettings.style.display = useLoraCheckbox.checked ? 'flex' : 'none';
-            }
-        }
-        
-        // Initialize LoRA toggle listener
-        document.addEventListener('DOMContentLoaded', () => {
-            const useLoraCheckbox = document.getElementById('soprano-use-lora');
-            if (useLoraCheckbox) {
-                useLoraCheckbox.addEventListener('change', toggleLoraSettings);
-                toggleLoraSettings(); // Set initial state
-            }
-        });
         
         // Dataset mode toggle
         function setDatasetMode(mode) {
@@ -6081,41 +5912,18 @@
             // Clear previous log
             document.getElementById('training-log').innerHTML = '';
             
-            let requestBody;
-            
-            if (backend === 'soprano') {
-                // Parse learning rate - supports scientific notation (e.g. "5e-5", "1e-4")
-                const lrInput = document.getElementById('soprano-lr').value;
-                const learningRate = parseFloat(lrInput) || 5e-5;
-                
-                requestBody = {
-                    model_name: document.getElementById('soprano-model-name').value || 'my_soprano_voice',
-                    dataset_path: datasetPath,
-                    epochs: parseInt(document.getElementById('soprano-epochs').value) || 20,
-                    learning_rate: learningRate,
-                    batch_size: parseInt(document.getElementById('soprano-batch-size').value) || 4,
-                    save_every: parseInt(document.getElementById('soprano-save-every').value) || 10,
-                    warmup_steps: parseInt(document.getElementById('soprano-warmup').value) || 100,
-                    gradient_accumulation: parseInt(document.getElementById('soprano-grad-accum').value) || 1,
-                    // LoRA settings
-                    use_lora: document.getElementById('soprano-use-lora').checked,
-                    lora_rank: parseInt(document.getElementById('soprano-lora-rank').value) || 32,
-                    lora_alpha: parseInt(document.getElementById('soprano-lora-alpha').value) || 64,
-                    lora_dropout: parseFloat(document.getElementById('soprano-lora-dropout').value) || 0.05
-                };
-            } else {
-                requestBody = {
-                    model_name: document.getElementById('chatterbox-model-name').value || 'my_chatterbox_voice',
-                    dataset_path: datasetPath,
-                    is_turbo: document.getElementById('chatterbox-turbo-mode').checked,
-                    epochs: parseInt(document.getElementById('chatterbox-epochs').value) || 150,
-                    learning_rate: parseFloat(document.getElementById('chatterbox-lr').value) || 5e-5,
-                    batch_size: parseInt(document.getElementById('chatterbox-batch-size').value) || 4,
-                    gradient_accumulation: parseInt(document.getElementById('chatterbox-grad-accum').value) || 8,
-                    preprocess: document.getElementById('chatterbox-preprocess').checked,
-                    speaker_reference: document.getElementById('chatterbox-speaker-ref').value || null
-                };
-            }
+            // Chatterbox training config
+            const requestBody = {
+                model_name: document.getElementById('chatterbox-model-name').value || 'my_chatterbox_voice',
+                dataset_path: datasetPath,
+                is_turbo: document.getElementById('chatterbox-turbo-mode').checked,
+                epochs: parseInt(document.getElementById('chatterbox-epochs').value) || 150,
+                learning_rate: parseFloat(document.getElementById('chatterbox-lr').value) || 5e-5,
+                batch_size: parseInt(document.getElementById('chatterbox-batch-size').value) || 4,
+                gradient_accumulation: parseInt(document.getElementById('chatterbox-grad-accum').value) || 8,
+                preprocess: document.getElementById('chatterbox-preprocess').checked,
+                speaker_reference: document.getElementById('chatterbox-speaker-ref').value || null
+            };
             
             try {
                 const res = await fetch(`${TRAINING_SERVER_URL}/v1/${backend}/train`, {
@@ -6169,19 +5977,6 @@
             try {
                 const res = await fetch(`${TRAINING_SERVER_URL}/v1/models`);
                 const data = await res.json();
-                
-                // Update Soprano models list
-                const sopranoList = document.getElementById('soprano-models-list');
-                if (data.soprano && data.soprano.length > 0) {
-                    sopranoList.innerHTML = data.soprano.map(m => `
-                        <div style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px;">
-                            <div style="font-weight: bold;">${m.name}</div>
-                            <div style="color: var(--text-muted); font-size: 12px;">Created: ${new Date(m.created).toLocaleDateString()}</div>
-                        </div>
-                    `).join('');
-                } else {
-                    sopranoList.innerHTML = '<div style="color: var(--text-muted);">No custom Soprano models found.</div>';
-                }
                 
                 // Update Chatterbox models list
                 const chatterboxList = document.getElementById('chatterbox-models-list');
