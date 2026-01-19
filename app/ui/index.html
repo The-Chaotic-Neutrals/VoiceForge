@@ -2756,6 +2756,10 @@
                                     
                                     statusEl.textContent = `Streaming complete! ${event.chunks_sent} chunks`;
                                     
+                                } else if (event.type === 'status') {
+                                    // Progress status update from server (e.g., Pocket TTS progress)
+                                    statusEl.textContent = event.message || 'Processing...';
+                                    
                                 } else if (event.type === 'error') {
                                     // Stop background stream on error
                                     if (window.bgStreamInfo) {

@@ -2012,7 +2012,7 @@ class PocketTTSClient(BaseServiceClient):
             response = self.session.post(
                 f"{self.server_url}/v1/audio/speech",
                 json=payload,
-                timeout=300  # 5 minute timeout
+                timeout=3600  # 60 minute timeout for long audio
             )
             
             if response.status_code != 200:
@@ -2034,6 +2034,129 @@ class PocketTTSClient(BaseServiceClient):
             raise
         except Exception as e:
             raise RuntimeError(f"Pocket TTS generation failed: {e}")
+    
+    def generate_stream(
+        self,
+        text: str,
+        voice: str = "alba",
+        speed: float = 1.0,
+        request_id: str = None,
+        on_progress: Optional[Callable[[dict], None]] = None
+    ) -> str:
+        """
+        Generate TTS audio using Pocket TTS with progress streaming.
+        
+        Args:
+            text: Text to synthesize
+            voice: Voice name OR path to audio prompt for cloning
+            speed: Playback speed (0.25-4.0)
+            request_id: Optional request ID for logging
+            on_progress: Optional callback for progress events
+        
+        Returns:
+            Path to output WAV file
+        
+        Raises:
+            RuntimeError: If generation fails
+        """
+        import logging
+        import base64
+        logger = logging.getLogger(__name__)
+        
+        try:
+            payload = {
+                "model": "pocket-tts",
+                "input": text,
+                "voice": voice,
+                "response_format": "wav",
+                "speed": speed
+            }
+            
+            logger.info(f"[PocketTTS] Streaming request to {self.server_url}/v1/audio/speech/stream")
+            print(f"[PocketTTS] Streaming request - voice={voice}, text_len={len(text)}")
+            
+            response = self.session.post(
+                f"{self.server_url}/v1/audio/speech/stream",
+                json=payload,
+                stream=True,
+                timeout=3600  # 60 minute timeout for long audio
+            )
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"Pocket TTS server error: {response.status_code} - {response.text}")
+            
+            audio_data = None
+            
+            # Parse SSE stream
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                
+                line = line.decode('utf-8')
+                if not line.startswith('data: '):
+                    continue
+                
+                try:
+                    event = json.loads(line[6:])
+                    event_type = event.get('type')
+                    
+                    if event_type == 'progress':
+                        logger.info(f"[PocketTTS] Progress: {event.get('sentence')}/{event.get('total')} ({event.get('progress')}%)")
+                        if on_progress:
+                            on_progress(event)
+                    
+                    elif event_type == 'sentence_complete':
+                        logger.info(f"[PocketTTS] Sentence {event.get('sentence')} done: {event.get('audio_duration')}s in {event.get('generation_time')}s ({event.get('rtf')}x RT)")
+                        if on_progress:
+                            on_progress(event)
+                    
+                    elif event_type == 'start':
+                        logger.info(f"[PocketTTS] Starting: {event.get('total_sentences')} sentences, {event.get('total_chars')} chars")
+                        if on_progress:
+                            on_progress(event)
+                    
+                    elif event_type == 'audio':
+                        logger.info(f"[PocketTTS] Received audio: {event.get('duration')}s, {event.get('size_bytes')} bytes")
+                        audio_data = base64.b64decode(event.get('data', ''))
+                        if on_progress:
+                            on_progress({'type': 'audio_received', 'duration': event.get('duration'), 'size_bytes': event.get('size_bytes')})
+                    
+                    elif event_type == 'complete':
+                        logger.info(f"[PocketTTS] Complete: {event.get('audio_duration')}s in {event.get('total_time')}s ({event.get('rtf')}x RT)")
+                        if on_progress:
+                            on_progress(event)
+                    
+                    elif event_type == 'error':
+                        raise RuntimeError(f"Pocket TTS error: {event.get('message')}")
+                    
+                    elif event_type == 'warning':
+                        logger.warning(f"[PocketTTS] Warning: {event.get('message')}")
+                        if on_progress:
+                            on_progress(event)
+                
+                except json.JSONDecodeError:
+                    continue
+            
+            if not audio_data:
+                raise RuntimeError("No audio data received from Pocket TTS")
+            
+            # Save audio to temp file
+            fd, output_path = tempfile.mkstemp(suffix="_pocket_tts.wav")
+            os.close(fd)
+            with open(output_path, "wb") as f:
+                f.write(audio_data)
+            
+            return output_path
+        
+        except requests.exceptions.ConnectionError:
+            raise self._handle_connection_error(
+                "Pocket TTS",
+                "Please start the Pocket TTS server."
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Pocket TTS streaming generation failed: {e}")
 
 
 # ============================================

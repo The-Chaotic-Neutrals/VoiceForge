@@ -170,6 +170,10 @@ async def generate_audio(
             print(f"[{request_id}] Using Pocket TTS with voice={pocket_voice}")
             pocket_tts = get_pocket_tts_client()
             print(f"[{request_id}] Pocket TTS client URL: {pocket_tts.server_url}")
+            status("Generating TTS (check Pocket TTS terminal for progress)...")
+            
+            # Use the regular generate endpoint - server logs per-sentence progress
+            # The streaming endpoint has issues with very large audio (base64 encoding)
             tts_path = await asyncio.get_event_loop().run_in_executor(
                 executor,
                 lambda: pocket_tts.generate(
@@ -403,8 +407,13 @@ async def generate_audio_streaming(
         def reader():
             try:
                 if tts_backend == "pocket_tts":
-                    # Pocket TTS doesn't have true streaming, generate full audio as single chunk
+                    # Pocket TTS - use regular generate (streaming has issues with large audio)
                     pocket_tts = get_pocket_tts_client()
+                    loop.call_soon_threadsafe(event_queue.put_nowait, {
+                        "type": "status", 
+                        "message": "Generating TTS (check Pocket TTS terminal for progress)..."
+                    })
+                    
                     audio_path = pocket_tts.generate(
                         text=request.input,
                         voice=pocket_voice,

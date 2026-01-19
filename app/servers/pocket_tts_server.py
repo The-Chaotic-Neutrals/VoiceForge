@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ConfigDict
@@ -327,6 +327,172 @@ async def list_voices():
     }
 
 
+def _split_text_into_sentences(text: str) -> list:
+    """Split text into sentences for progress tracking.
+    
+    Uses a simple approach that splits on sentence-ending punctuation while
+    keeping reasonable chunk sizes.
+    """
+    import re
+    # Split on sentence boundaries (., !, ?) followed by space or end
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    # Filter empty and merge very short sentences
+    result = []
+    current = ""
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if len(current) + len(s) < 100:  # Merge short sentences
+            current = (current + " " + s).strip() if current else s
+        else:
+            if current:
+                result.append(current)
+            current = s
+    if current:
+        result.append(current)
+    return result if result else [text]
+
+
+def _generate_audio_for_text(text: str, voice_state) -> np.ndarray:
+    """Generate audio for a single text segment using pre-loaded voice state."""
+    audio_chunks = []
+    
+    stream = tts_model.generate_audio_stream(voice_state, text, copy_state=True)
+    
+    for chunk in stream:
+        if isinstance(chunk, torch.Tensor):
+            chunk_np = chunk.detach().cpu().numpy()
+        else:
+            chunk_np = np.array(chunk)
+        
+        if chunk_np.dtype != np.int16:
+            chunk_np = (np.clip(chunk_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+        
+        audio_chunks.append(chunk_np)
+    
+    if audio_chunks:
+        return np.concatenate(audio_chunks)
+    return np.array([], dtype=np.int16)
+
+
+@app.post("/v1/audio/speech/stream")
+async def create_speech_streaming(request: AudioSpeechRequest):
+    """Generate speech with SSE progress updates.
+    
+    Returns Server-Sent Events with:
+    - type: "progress" - progress updates with sentence info
+    - type: "audio" - base64-encoded WAV audio data
+    - type: "complete" - generation finished
+    - type: "error" - error occurred
+    """
+    import base64
+    import copy
+    
+    logger.info(
+        f"Processing streaming speech request - voice: {request.voice}, "
+        f"input length: {len(request.input) if request.input else 0}, "
+        f"cloning: {voice_cloning_enabled}"
+    )
+
+    if not tts_model:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    if not request.input or not request.input.strip():
+        raise HTTPException(status_code=400, detail="Input text is required")
+
+    async def event_generator():
+        try:
+            voice_state = _get_voice_state(request.voice)
+            voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
+            sample_rate = tts_model.sample_rate
+            
+            # Split text into sentences for progress tracking
+            sentences = _split_text_into_sentences(request.input)
+            total_sentences = len(sentences)
+            
+            yield f"data: {json.dumps({'type': 'start', 'total_sentences': total_sentences, 'total_chars': len(request.input)})}\n\n"
+            
+            # Get voice state ONCE before the loop
+            if voice_state is None:
+                voice_state = tts_model.get_state_for_audio_prompt(voice_name)
+            
+            all_audio = []
+            total_samples = 0
+            start_time = time.time()
+            
+            for i, sentence in enumerate(sentences):
+                sentence_start = time.time()
+                
+                # Progress update
+                progress = (i / total_sentences) * 100
+                yield f"data: {json.dumps({'type': 'progress', 'sentence': i + 1, 'total': total_sentences, 'progress': round(progress, 1), 'text_preview': sentence[:50] + '...' if len(sentence) > 50 else sentence})}\n\n"
+                
+                # Generate audio for this sentence
+                try:
+                    audio_np = _generate_audio_for_text(sentence, voice_state)
+                    if len(audio_np) > 0:
+                        all_audio.append(audio_np)
+                        total_samples += len(audio_np)
+                        
+                        # Calculate timing
+                        sentence_time = time.time() - sentence_start
+                        audio_duration = len(audio_np) / sample_rate
+                        rtf = audio_duration / sentence_time if sentence_time > 0 else 0
+                        
+                        yield f"data: {json.dumps({'type': 'sentence_complete', 'sentence': i + 1, 'audio_duration': round(audio_duration, 2), 'generation_time': round(sentence_time, 2), 'rtf': round(rtf, 2)})}\n\n"
+                except Exception as e:
+                    logger.error(f"Error generating sentence {i + 1}: {e}")
+                    yield f"data: {json.dumps({'type': 'warning', 'message': f'Sentence {i + 1} failed: {str(e)}'})}\n\n"
+            
+            if not all_audio:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'No audio generated'})}\n\n"
+                return
+            
+            # Combine all audio
+            combined_audio = np.concatenate(all_audio)
+            
+            # Resample to 48kHz
+            target_rate = 48000
+            if sample_rate != target_rate:
+                x = combined_audio.astype(np.float32) / 32768.0
+                x = scipy.signal.resample_poly(x, target_rate, sample_rate)
+                combined_audio = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
+                sample_rate = target_rate
+            
+            # Create WAV
+            audio_buffer = io.BytesIO()
+            scipy.io.wavfile.write(audio_buffer, sample_rate, combined_audio)
+            audio_bytes = audio_buffer.getvalue()
+            
+            # Encode as base64
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+            
+            total_time = time.time() - start_time
+            audio_duration = len(combined_audio) / sample_rate
+            
+            yield f"data: {json.dumps({'type': 'audio', 'format': 'wav', 'sample_rate': sample_rate, 'duration': round(audio_duration, 2), 'size_bytes': len(audio_bytes), 'data': audio_b64})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'total_time': round(total_time, 2), 'audio_duration': round(audio_duration, 2), 'rtf': round(audio_duration / total_time, 2) if total_time > 0 else 0})}\n\n"
+            
+            logger.info(f"Streaming generation complete: {audio_duration:.1f}s audio in {total_time:.1f}s ({audio_duration/total_time:.1f}x RT)")
+            
+        except HTTPException as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': e.detail})}\n\n"
+        except Exception as e:
+            logger.error(f"Streaming generation error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 @app.post("/v1/audio/speech")
 async def create_speech(request: AudioSpeechRequest):
     logger.info(
@@ -346,63 +512,58 @@ async def create_speech(request: AudioSpeechRequest):
 
     try:
         voice_state = _get_voice_state(request.voice)
+        voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
         sample_rate = tts_model.sample_rate
 
-        async def generate_audio_stream():
-            nonlocal sample_rate
-
-            audio_chunks = []
+        # Split into sentences for progress logging
+        sentences = _split_text_into_sentences(request.input)
+        total_sentences = len(sentences)
+        
+        logger.info(f"Generating {total_sentences} sentences...")
+        
+        # Get voice state ONCE before the loop (avoids re-downloading embeddings for each sentence)
+        if voice_state is None:
+            logger.info(f"Loading voice state for '{voice_name}' (one-time)...")
+            voice_state = tts_model.get_state_for_audio_prompt(voice_name)
+            logger.info(f"Voice state loaded!")
+        
+        all_audio = []
+        start_time = time.time()
+        
+        for i, sentence in enumerate(sentences):
+            sentence_start = time.time()
+            logger.info(f"[{i+1}/{total_sentences}] Generating: {sentence[:60]}{'...' if len(sentence) > 60 else ''}")
             
-            # Generate based on whether we have a voice state or using built-in voice
-            if voice_state is not None:
-                # Voice cloning mode - use pre-loaded state
-                stream = tts_model.generate_audio_stream(voice_state, request.input, copy_state=True)
-            else:
-                # Non-cloning mode - get built-in voice state using voice NAME
-                # The library's get_state_for_audio_prompt() accepts predefined voice names directly
-                voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
-                logger.info(f"Using built-in voice: {voice_name}")
-                builtin_state = tts_model.get_state_for_audio_prompt(voice_name)
-                stream = tts_model.generate_audio_stream(builtin_state, request.input, copy_state=True)
+            audio_np = _generate_audio_for_text(sentence, voice_state)
+            if len(audio_np) > 0:
+                all_audio.append(audio_np)
+                sentence_time = time.time() - sentence_start
+                audio_duration = len(audio_np) / sample_rate
+                logger.info(f"[{i+1}/{total_sentences}] Generated {audio_duration:.1f}s audio in {sentence_time:.1f}s ({audio_duration/sentence_time:.1f}x RT)")
 
-            for chunk in stream:
-                if isinstance(chunk, torch.Tensor):
-                    chunk_np = chunk.detach().cpu().numpy()
-                else:
-                    chunk_np = np.array(chunk)
+        if not all_audio:
+            raise HTTPException(status_code=500, detail="No audio chunks generated")
 
-                if chunk_np.dtype != np.int16:
-                    chunk_np = (np.clip(chunk_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+        audio_np = np.concatenate(all_audio)
 
-                audio_chunks.append(chunk_np)
+        # Resample to 48kHz for compatibility
+        target_rate = 48000
+        if sample_rate != target_rate:
+            x = audio_np.astype(np.float32) / 32768.0
+            x = scipy.signal.resample_poly(x, target_rate, sample_rate)
+            audio_np = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
+            sample_rate = target_rate
 
-            if not audio_chunks:
-                raise HTTPException(status_code=500, detail="No audio chunks generated")
+        audio_buffer = io.BytesIO()
+        scipy.io.wavfile.write(audio_buffer, sample_rate, audio_np)
+        audio_bytes = audio_buffer.getvalue()
 
-            audio_np = np.concatenate(audio_chunks)
+        total_time = time.time() - start_time
+        audio_duration = len(audio_np) / sample_rate
+        logger.info(f"Total: {audio_duration:.1f}s audio in {total_time:.1f}s ({audio_duration/total_time:.1f}x RT), {len(audio_bytes)} bytes")
 
-            # Resample to 48kHz for compatibility
-            target_rate = 48000
-            if sample_rate != target_rate:
-                x = audio_np.astype(np.float32) / 32768.0
-                x = scipy.signal.resample_poly(x, target_rate, sample_rate)
-                audio_np = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
-                sample_rate = target_rate
-
-            audio_buffer = io.BytesIO()
-            scipy.io.wavfile.write(audio_buffer, sample_rate, audio_np)
-            audio_buffer.seek(0)
-
-            logger.info(f"Audio generated: {sample_rate}Hz, {len(audio_np)} samples")
-
-            while True:
-                buf = audio_buffer.read(8192)
-                if not buf:
-                    break
-                yield buf
-
-        return StreamingResponse(
-            generate_audio_stream(),
+        return Response(
+            content=audio_bytes,
             media_type="audio/wav",
             headers={"Content-Disposition": 'attachment; filename="speech.wav"'},
         )
