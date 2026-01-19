@@ -2196,8 +2196,7 @@
             ttsBackendSelect.addEventListener('change', updateTTSBackendVisibility);
         }
         updateTTSBackendVisibility();
-        refreshChatterboxModels(); // Load custom Chatterbox models on page init
-        refreshSopranoModels(); // Load custom Soprano models on page init
+        // Note: Custom model lists are loaded in DOMContentLoaded after server connections are established
         
         // Auto-save on changes
         document.addEventListener('change', (e) => {
@@ -2240,6 +2239,10 @@
             
             // Update TTS backend visibility after settings are loaded
             updateTTSBackendVisibility();
+            
+            // Load custom model lists after initialization (servers should be ready by now)
+            await refreshChatterboxModels();
+            await refreshSopranoModels();
         });
 
         // Keyboard shortcuts

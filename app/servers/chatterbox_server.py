@@ -75,7 +75,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Chunking is done client-side in tts_service.py - servers receive pre-chunked text
+# Text chunking is handled by each endpoint using util.text_utils.split_text()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -163,7 +163,11 @@ class ChatterboxWorker:
             return self.model
     
     def _load_custom_checkpoint(self, model_path: str, model_name: str):
-        """Load custom fine-tuned checkpoint weights onto the model."""
+        """Load custom fine-tuned checkpoint weights onto the model.
+        
+        Handles vocabulary size mismatches between fine-tuned checkpoints (which may have
+        expanded vocabulary for multi-language support) and the base model.
+        """
         from safetensors.torch import load_file
         
         # Find the checkpoint file - prefer t3_turbo_finetuned.safetensors or latest checkpoint
@@ -204,6 +208,35 @@ class ChatterboxWorker:
                     # Remove 'model.' prefix if present (from trainer)
                     clean_key = key.replace('model.', '') if key.startswith('model.') else key
                     t3_state_dict[clean_key] = value
+                
+                # Get current model state dict for shape comparison
+                model_state_dict = self.model.t3.state_dict()
+                
+                # Handle vocabulary size mismatch for embedding and output head layers
+                # Fine-tuned models may have expanded vocabulary (e.g., 52260 vs base 50276)
+                vocab_layers = ['text_emb.weight', 'text_head.weight']
+                
+                for layer_name in vocab_layers:
+                    if layer_name in t3_state_dict and layer_name in model_state_dict:
+                        checkpoint_shape = t3_state_dict[layer_name].shape
+                        model_shape = model_state_dict[layer_name].shape
+                        
+                        if checkpoint_shape != model_shape:
+                            # Vocabulary size mismatch - copy only what fits
+                            checkpoint_vocab_size = checkpoint_shape[0]
+                            model_vocab_size = model_shape[0]
+                            
+                            if checkpoint_vocab_size > model_vocab_size:
+                                # Checkpoint has expanded vocab - truncate to base model size
+                                logger.info(f"[Worker {self.worker_id}] {layer_name}: checkpoint vocab ({checkpoint_vocab_size}) > model vocab ({model_vocab_size}), truncating")
+                                t3_state_dict[layer_name] = t3_state_dict[layer_name][:model_vocab_size, :]
+                            else:
+                                # Model has larger vocab than checkpoint - partial copy
+                                logger.info(f"[Worker {self.worker_id}] {layer_name}: checkpoint vocab ({checkpoint_vocab_size}) < model vocab ({model_vocab_size}), partial copy")
+                                # Create new tensor with model shape, copy checkpoint weights
+                                new_weights = model_state_dict[layer_name].clone()
+                                new_weights[:checkpoint_vocab_size, :] = t3_state_dict[layer_name]
+                                t3_state_dict[layer_name] = new_weights
                 
                 # Load with strict=False to allow partial loading
                 missing, unexpected = self.model.t3.load_state_dict(t3_state_dict, strict=False)
@@ -467,7 +500,7 @@ async def gpu_memory():
 
 import re
 
-# Removed split_text_into_sentences() and split_text_by_tokens() - chunking is done client-side in tts_service.py
+from util.text_utils import split_text
 
 
 @app.post("/v1/tts/chunked")
@@ -521,9 +554,8 @@ async def generate_tts_chunked(
         except Exception as e:
             logger.warning(f"[{request_id}] Could not verify prompt duration: {e}")
         
-        # Chunking is done client-side in tts_service.py - this endpoint receives pre-chunked text
-        # Just treat the text as a single chunk (chunking already happened upstream)
-        chunks = [text]
+        # Split text into chunks for better quality on long text
+        chunks = split_text(text, max_tokens=max_tokens, token_method="tiktoken")
         logger.info(f"[{request_id}] Chunked TTS: {len(chunks)} chunks from {len(text)} chars (max_tokens={max_tokens})")
         
         if not chunks:

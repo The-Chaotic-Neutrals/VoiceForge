@@ -1595,87 +1595,64 @@ def blend_with_background(
             subprocess.run([
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                 "-i", main_wav_path, "-af", f"volume={vol_db}dB",
-                "-c:a", "pcm_f32le", "-ar", str(main_sample_rate), tmp
+                "-c:a", "pcm_f32le", tmp
             ], check=True)
             return tmp
 
-    # Build filter: Each track gets volume adjusted, then we use a SINGLE mix at the end
-    # This avoids the double-mixing quality loss
-    filters = []
-    labels = []
+    # =========================================================================
+    # EXACT same pattern as working /v1/background/mix-chunk endpoint
+    # =========================================================================
+    args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", main_wav_path]
     
-    # Main track - preserve quality, only adjust volume if needed
+    # Add background tracks with -t to limit duration (like mix-chunk uses)
+    for bg_path, vol, delay, fade_in, fade_out in valid_bg:
+        # Use -t to limit bg duration to main length (no infinite loop needed)
+        args += ["-t", str(main_len_s), "-i", bg_path]
+    
+    # Build filter - EXACT same pattern as mix-chunk
+    filter_inputs = []
+    mix_inputs = []
+    
+    # Main track
     if main_volume != 1.0:
-        vol_db = 20 * math.log10(max(0.0001, main_volume))
-        filters.append(f"[0:a]volume={vol_db}dB[m]")
+        vol_db = 20 * math.log10(max(0.001, main_volume))
+        filter_inputs.append(f"[0:a]volume={vol_db:.1f}dB[main]")
     else:
-        filters.append("[0:a]anull[m]")
-    labels.append("[m]")
+        filter_inputs.append("[0:a]anull[main]")
+    mix_inputs.append("[main]")
     
     # Background tracks
     for i, (bg_path, vol, delay, fade_in, fade_out) in enumerate(valid_bg):
         input_idx = i + 1
-        vol_db = 20 * math.log10(max(0.0001, vol))
-        
-        # Build filter chain for this bg track
+        vol_db = 20 * math.log10(max(0.001, vol))
         chain = f"[{input_idx}:a]"
-        
-        # Resample if needed (detect bg sample rate)
-        try:
-            probe = subprocess.run([
-                "ffprobe", "-v", "error", "-show_entries", "stream=sample_rate",
-                "-of", "default=noprint_wrappers=1:nokey=1", bg_path
-            ], capture_output=True, text=True)
-            bg_sr = int(float(probe.stdout.strip().split('\n')[0]))
-            if bg_sr != main_sample_rate:
-                chain += f"aresample={main_sample_rate}:resampler=soxr,"
-        except:
-            pass
         
         # Apply delay if needed
         if delay > 0:
             chain += f"adelay={int(delay*1000)}|{int(delay*1000)},"
         
-        # Trim to main length + delay
-        chain += f"atrim=0:{main_len_s + delay:.3f},"
-        
-        # Apply fade in (starts at 0, duration = fade_in seconds)
+        # Apply fade in
         if fade_in > 0:
             chain += f"afade=t=in:st=0:d={fade_in:.2f},"
         
-        # Apply fade out (starts at main_len_s - fade_out, or delay if longer)
+        # Apply fade out
         if fade_out > 0:
             fade_out_start = max(0, main_len_s - fade_out)
             chain += f"afade=t=out:st={fade_out_start:.2f}:d={fade_out:.2f},"
         
         # Apply volume
-        chain += f"volume={vol_db}dB[b{i}]"
-        filters.append(chain)
-        labels.append(f"[b{i}]")
+        chain += f"volume={vol_db:.1f}dB[bg{i}]"
+        filter_inputs.append(chain)
+        mix_inputs.append(f"[bg{i}]")
     
-    # Single mix using amerge + pan for clean stereo mixing
-    # This is much cleaner than nested amix calls
-    all_labels = "".join(labels)
-    num_inputs = len(labels)
-    
-    # Use amix with weights=1 for each input (no normalization issues)
-    # weights parameter ensures each input contributes at its set volume
-    weights = " ".join(["1"] * num_inputs)
-    filters.append(f"{all_labels}amix=inputs={num_inputs}:duration=first:weights={weights}[out]")
-    
-    filter_complex = ";".join(filters)
+    # Mix all inputs - amix with normalize=0, duration=first to match main audio length
+    filter_str = ";".join(filter_inputs) + ";" + "".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:duration=first:normalize=0[out]"
     
     fd, tmp = tempfile.mkstemp(suffix="_final.wav")
     os.close(fd)
     
-    args += [
-        "-filter_complex", filter_complex,
-        "-map", "[out]",
-        "-c:a", "pcm_f32le",  # 32-bit float for lossless processing
-        "-ar", str(main_sample_rate),
-        "-ac", "2",
-        tmp
-    ]
+    # Output args - EXACT same as mix-chunk
+    args += ["-filter_complex", filter_str, "-map", "[out]", "-c:a", "pcm_f32le", tmp]
     
     subprocess.run(args, check=True)
     return tmp

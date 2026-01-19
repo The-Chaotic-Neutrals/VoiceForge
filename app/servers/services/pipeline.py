@@ -375,6 +375,10 @@ async def generate_audio_streaming(
         
         # Track time offset for spatial audio panning continuity
         spatial_time_offset = 0.0
+        
+        # Track processed chunks for save_output
+        save_output = getattr(request, "save_output", False)
+        processed_chunk_paths = [] if save_output else None
 
         # Both Chatterbox and Soprano use the same streaming infrastructure
         event_queue: asyncio.Queue = asyncio.Queue()
@@ -466,6 +470,49 @@ async def generate_audio_streaming(
                 return
             
             if event_type == "complete":
+                # Save combined audio if requested
+                if save_output and processed_chunk_paths:
+                    try:
+                        status(f"Saving merged audio ({len(processed_chunk_paths)} chunks)...")
+                        # Combine all processed chunks
+                        combined_seg = None
+                        for chunk_path in processed_chunk_paths:
+                            try:
+                                seg = AudioSegment.from_file(chunk_path)
+                                if combined_seg is None:
+                                    combined_seg = seg
+                                else:
+                                    combined_seg += seg
+                            except Exception as e:
+                                print(f"[{request_id}] Warning: Failed to load chunk {chunk_path}: {e}")
+                        
+                        if combined_seg is not None:
+                            # Export to temp file and save
+                            fd, merged_path = tempfile.mkstemp(suffix="_merged.wav")
+                            os.close(fd)
+                            combined_seg.export(merged_path, format="wav")
+                            
+                            try:
+                                run_save(merged_path, request.input, request_id=request_id)
+                                status("Merged audio saved!")
+                            except Exception as e:
+                                print(f"[{request_id}] Warning: Save failed: {e}")
+                            finally:
+                                try:
+                                    os.remove(merged_path)
+                                except:
+                                    pass
+                    except Exception as e:
+                        print(f"[{request_id}] Warning: Failed to save merged audio: {e}")
+                    finally:
+                        # Cleanup processed chunk files
+                        for pf in processed_chunk_paths:
+                            try:
+                                if pf and os.path.exists(pf):
+                                    os.remove(pf)
+                            except:
+                                pass
+                
                 yield {"type": "complete", "chunks_sent": chunks_sent, "total_duration": round(total_duration, 2)}
                 return
             
@@ -598,7 +645,15 @@ async def generate_audio_streaming(
                 "text": (chunk_text or "")[:100],
             }
             
-            # Cleanup chunk temps
+            # Keep final processed file for save_output, cleanup others
+            if save_output and processed_chunk_paths is not None:
+                # Keep the final processed file (current) for later merging
+                processed_chunk_paths.append(current)
+                # Remove current from chunk_temps so it doesn't get deleted
+                if current in chunk_temps:
+                    chunk_temps.remove(current)
+            
+            # Cleanup chunk temps (but not the final processed file if save_output)
             for tf in chunk_temps:
                 try:
                     if tf and os.path.exists(tf):
@@ -619,3 +674,11 @@ async def generate_audio_streaming(
                     os.remove(tf)
             except:
                 pass
+        # Cleanup any remaining processed chunk files (in case of error/cancellation)
+        if processed_chunk_paths:
+            for pf in processed_chunk_paths:
+                try:
+                    if pf and os.path.exists(pf):
+                        os.remove(pf)
+                except:
+                    pass
