@@ -273,6 +273,7 @@ class AudioSpeechRequest(BaseModel):
     voice: str = Field(default="alba", description="Voice to use (or prompt location for cloning)")
     response_format: str = Field(default="wav", description="Audio format")
     speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Speed of speech")
+    max_tokens: int = Field(default=50, ge=5, le=100, description="Max tokens per chunk (5-25=fast, 50=balanced, 75-100=quality)")
 
 
 @app.exception_handler(RequestValidationError)
@@ -327,49 +328,57 @@ async def list_voices():
     }
 
 
-def _split_text_into_sentences(text: str) -> list:
-    """Split text into sentences for progress tracking.
+def _split_text_into_chunks(text: str, max_tokens: int = 50) -> list:
+    """Split text into chunks using the shared text_utils.
     
-    Uses a simple approach that splits on sentence-ending punctuation while
-    keeping reasonable chunk sizes.
+    Uses the existing split_text utility which properly handles:
+    - Token counting
+    - Sentence boundaries first
+    - Clause boundaries (commas, semicolons) as fallback
+    - Word boundaries as last resort
+    
+    Args:
+        text: Text to split
+        max_tokens: Max tokens per chunk (default 50 to stay well under pocket_tts 1000 limit)
+    
+    Returns:
+        List of text chunks
     """
-    import re
-    # Split on sentence boundaries (., !, ?) followed by space or end
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    # Filter empty and merge very short sentences
-    result = []
-    current = ""
-    for s in sentences:
-        s = s.strip()
-        if not s:
-            continue
-        if len(current) + len(s) < 100:  # Merge short sentences
-            current = (current + " " + s).strip() if current else s
-        else:
-            if current:
-                result.append(current)
-            current = s
-    if current:
-        result.append(current)
-    return result if result else [text]
+    import sys
+    import os
+    # Add util to path if needed
+    util_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'util')
+    if util_path not in sys.path:
+        sys.path.insert(0, util_path)
+    
+    from text_utils import split_text
+    
+    return split_text(text, max_tokens=max_tokens, token_method="words")
 
 
 def _generate_audio_for_text(text: str, voice_state) -> np.ndarray:
     """Generate audio for a single text segment using pre-loaded voice state."""
     audio_chunks = []
     
-    stream = tts_model.generate_audio_stream(voice_state, text, copy_state=True)
-    
-    for chunk in stream:
-        if isinstance(chunk, torch.Tensor):
-            chunk_np = chunk.detach().cpu().numpy()
-        else:
-            chunk_np = np.array(chunk)
+    try:
+        stream = tts_model.generate_audio_stream(voice_state, text, copy_state=True)
         
-        if chunk_np.dtype != np.int16:
-            chunk_np = (np.clip(chunk_np, -1.0, 1.0) * 32767.0).astype(np.int16)
-        
-        audio_chunks.append(chunk_np)
+        for chunk in stream:
+            if isinstance(chunk, torch.Tensor):
+                chunk_np = chunk.detach().cpu().numpy()
+            else:
+                chunk_np = np.array(chunk)
+            
+            if chunk_np.dtype != np.int16:
+                chunk_np = (np.clip(chunk_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+            
+            audio_chunks.append(chunk_np)
+    except RuntimeError as e:
+        # Handle token limit errors gracefully
+        if "size of tensor" in str(e):
+            logger.warning(f"Text too long for model, skipping: {text[:50]}... Error: {e}")
+            return np.array([], dtype=np.int16)
+        raise
     
     if audio_chunks:
         return np.concatenate(audio_chunks)
@@ -407,8 +416,9 @@ async def create_speech_streaming(request: AudioSpeechRequest):
             voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
             sample_rate = tts_model.sample_rate
             
-            # Split text into sentences for progress tracking
-            sentences = _split_text_into_sentences(request.input)
+            # Split text into chunks for progress tracking (using shared utility)
+            max_tokens = getattr(request, 'max_tokens', 50)  # Use UI setting or default
+            sentences = _split_text_into_chunks(request.input, max_tokens=max_tokens)
             total_sentences = len(sentences)
             
             yield f"data: {json.dumps({'type': 'start', 'total_sentences': total_sentences, 'total_chars': len(request.input)})}\n\n"
@@ -515,8 +525,9 @@ async def create_speech(request: AudioSpeechRequest):
         voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
         sample_rate = tts_model.sample_rate
 
-        # Split into sentences for progress logging
-        sentences = _split_text_into_sentences(request.input)
+        # Split into chunks for progress logging (using shared utility)
+        max_tokens = getattr(request, 'max_tokens', 50)  # Use UI setting or default
+        sentences = _split_text_into_chunks(request.input, max_tokens=max_tokens)
         total_sentences = len(sentences)
         
         logger.info(f"Generating {total_sentences} sentences...")
@@ -534,12 +545,18 @@ async def create_speech(request: AudioSpeechRequest):
             sentence_start = time.time()
             logger.info(f"[{i+1}/{total_sentences}] Generating: {sentence[:60]}{'...' if len(sentence) > 60 else ''}")
             
-            audio_np = _generate_audio_for_text(sentence, voice_state)
-            if len(audio_np) > 0:
-                all_audio.append(audio_np)
-                sentence_time = time.time() - sentence_start
-                audio_duration = len(audio_np) / sample_rate
-                logger.info(f"[{i+1}/{total_sentences}] Generated {audio_duration:.1f}s audio in {sentence_time:.1f}s ({audio_duration/sentence_time:.1f}x RT)")
+            try:
+                audio_np = _generate_audio_for_text(sentence, voice_state)
+                if len(audio_np) > 0:
+                    all_audio.append(audio_np)
+                    sentence_time = time.time() - sentence_start
+                    audio_duration = len(audio_np) / sample_rate
+                    logger.info(f"[{i+1}/{total_sentences}] Generated {audio_duration:.1f}s audio in {sentence_time:.1f}s ({audio_duration/sentence_time:.1f}x RT)")
+                else:
+                    logger.warning(f"[{i+1}/{total_sentences}] Empty audio returned, skipping")
+            except Exception as e:
+                logger.error(f"[{i+1}/{total_sentences}] Error generating sentence: {e}")
+                continue  # Skip failed sentences instead of crashing
 
         if not all_audio:
             raise HTTPException(status_code=500, detail="No audio chunks generated")

@@ -1974,6 +1974,7 @@ class PocketTTSClient(BaseServiceClient):
         text: str,
         voice: str = "alba",
         speed: float = 1.0,
+        max_tokens: int = 50,
         request_id: str = None
     ) -> str:
         """
@@ -1985,6 +1986,7 @@ class PocketTTSClient(BaseServiceClient):
                    Built-in voices: alba, marius, javert, jean, fantine, cosette, eponine, azelma
                    For cloning: pass the path to a reference audio file
             speed: Playback speed (0.25-4.0)
+            max_tokens: Max tokens per chunk (5-25=fast, 50=balanced, 75-100=quality)
             request_id: Optional request ID for logging
         
         Returns:
@@ -2002,7 +2004,8 @@ class PocketTTSClient(BaseServiceClient):
                 "input": text,
                 "voice": voice,
                 "response_format": "wav",
-                "speed": speed
+                "speed": speed,
+                "max_tokens": max_tokens
             }
             
             logger.info(f"[PocketTTS] Sending request to {self.server_url}/v1/audio/speech")

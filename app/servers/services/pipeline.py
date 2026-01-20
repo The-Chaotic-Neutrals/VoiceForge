@@ -174,12 +174,14 @@ async def generate_audio(
             
             # Use the regular generate endpoint - server logs per-sentence progress
             # The streaming endpoint has issues with very large audio (base64 encoding)
+            max_tokens = request.tts_batch_tokens or 50  # Use UI chunk size setting
             tts_path = await asyncio.get_event_loop().run_in_executor(
                 executor,
                 lambda: pocket_tts.generate(
                     text=request.input,
                     voice=pocket_voice,
                     speed=getattr(request, 'speed', 1.0),
+                    max_tokens=max_tokens,
                 )
             )
             print(f"[{request_id}] Pocket TTS generated: {tts_path}")
@@ -414,10 +416,12 @@ async def generate_audio_streaming(
                         "message": "Generating TTS (check Pocket TTS terminal for progress)..."
                     })
                     
+                    max_tokens = request.tts_batch_tokens or 50  # Use UI chunk size setting
                     audio_path = pocket_tts.generate(
                         text=request.input,
                         voice=pocket_voice,
                         speed=getattr(request, 'speed', 1.0),
+                        max_tokens=max_tokens,
                     )
                     # Emit as a single chunk event
                     with open(audio_path, 'rb') as f:
