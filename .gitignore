@@ -41,3 +41,4 @@ app/config/config.json
 /app/training/chatterbox-finetuning/src/chatterbox_/models/s3gen
 /app/datasets/Soft
 /app/models/soprano_custom/Soft
+/output/background_streams

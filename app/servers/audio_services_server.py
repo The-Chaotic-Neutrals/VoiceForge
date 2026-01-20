@@ -631,7 +631,7 @@ def _get_background_stream_cache_path(tracks: List[Dict], duration: int, sample_
     cache_json = json.dumps(cache_data, sort_keys=True)
     cache_hash = hashlib.md5(cache_json.encode()).hexdigest()[:16]
     
-    cache_filename = f"bgmix_{cache_hash}_{duration}s.mp3"
+    cache_filename = f"bgmix_{cache_hash}_{duration}s.wav"
     return str(cache_dir / cache_filename)
 
 
@@ -689,8 +689,8 @@ async def background_stream(
                     
                     return FileResponse(
                         existing["cache_path"],
-                        media_type="audio/mpeg",
-                        filename=f"background_{session_id}.mp3",
+                        media_type="audio/wav",
+                        filename=f"background_{session_id}.wav",
                         headers={
                             "X-Session-ID": session_id,
                             "X-Cached": "true",
@@ -741,8 +741,8 @@ async def background_stream(
         
         return FileResponse(
             cache_path,
-            media_type="audio/mpeg",
-            filename=f"background_{session_id}.mp3",
+            media_type="audio/wav",
+            filename=f"background_{session_id}.wav",
             headers={
                 "X-Session-ID": session_id,
                 "X-Cached": "true",
@@ -790,11 +790,10 @@ async def background_stream(
         args += ["-af", filter_str]
     
     # Output to cache path (persistent, not temp)
-    # Use MP3 for much smaller file sizes (320kbps high quality)
+    # Use high quality WAV (32-bit float)
     args += [
         "-t", str(duration),  # Limit duration
-        "-c:a", "libmp3lame",  # MP3 encoder
-        "-b:a", "320k",  # High quality bitrate
+        "-c:a", "pcm_f32le",  # 32-bit float WAV
         "-ar", str(sample_rate),
         "-ac", "2",
         cache_path
@@ -832,8 +831,8 @@ async def background_stream(
         
         return FileResponse(
             output_path,
-            media_type="audio/mpeg",
-            filename=f"background_{session_id}.mp3",
+            media_type="audio/wav",
+            filename=f"background_{session_id}.wav",
             headers={
                 "X-Session-ID": session_id,
                 "X-Cached": "false",

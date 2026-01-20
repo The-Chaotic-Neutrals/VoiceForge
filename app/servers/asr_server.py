@@ -714,6 +714,230 @@ async def get_model_info():
 
 
 # ==========================================
+# LIVE TRANSCRIPTION WEBSOCKET
+# ==========================================
+
+@app.websocket("/v1/audio/transcriptions/live")
+async def live_transcription_websocket(
+    websocket: WebSocket, 
+    model: str = None, 
+    language: str = "en",
+    call_mode: bool = False,
+    silence_threshold: float = 1.5
+):
+    """
+    WebSocket endpoint for real-time live transcription.
+    
+    Parameters:
+        model: ASR model to use (whisper-* or glm-*)
+        language: Language code (default: en)
+        call_mode: If True, accumulates audio and only sends when silence detected
+        silence_threshold: Seconds of silence before sending transcript (call_mode only)
+    
+    Client sends: { "type": "audio", "data": "<base64 Float32Array>" }
+    Client sends: { "type": "end" } to finish
+    
+    Server sends: { "type": "ready" }
+    Server sends: { "type": "partial", "text": "..." } (not in call_mode)
+    Server sends: { "type": "transcript", "text": "..." }
+    Server sends: { "type": "complete", "text": "..." }
+    Server sends: { "type": "error", "message": "..." }
+    """
+    await websocket.accept()
+    log_info(f"[LIVE] WebSocket connected, model={model}, language={language}, call_mode={call_mode}")
+    
+    effective_model = model or f"whisper-{DEFAULT_WHISPER_MODEL}"
+    use_glm = is_glm_model(effective_model)
+    
+    # Check backend availability
+    if use_glm and not GLM_ASR_AVAILABLE:
+        await websocket.send_json({"type": "error", "message": f"GLM-ASR not available: {GLM_ASR_ERROR}"})
+        await websocket.close()
+        return
+    if not use_glm and not FASTER_WHISPER_AVAILABLE:
+        await websocket.send_json({"type": "error", "message": f"Whisper not available: {FASTER_WHISPER_ERROR}"})
+        await websocket.close()
+        return
+    
+    await websocket.send_json({"type": "ready", "call_mode": call_mode})
+    
+    # Accumulate audio chunks
+    audio_chunks = []
+    sample_rate = 16000  # Default, updated from client
+    
+    # Silence detection for call mode
+    energy_threshold = 0.001  # RMS threshold for silence
+    consecutive_silence_samples = 0
+    has_speech = False
+    
+    # Process audio in ~3 second intervals (for non-call mode)
+    chunk_interval = 3.0  # seconds
+    samples_per_chunk = int(chunk_interval * sample_rate)
+    accumulated_samples = 0
+    full_transcript = []
+    
+    try:
+        while True:
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=60.0)
+            except asyncio.TimeoutError:
+                log_warn("[LIVE] WebSocket timeout, closing")
+                break
+            
+            msg_type = message.get("type")
+            
+            if msg_type == "end":
+                log_info("[LIVE] Client sent end signal")
+                break
+            
+            elif msg_type == "audio":
+                # Decode base64 Float32Array
+                try:
+                    audio_b64 = message.get("data", "")
+                    # Get sample rate from client (default 16000 for backwards compat)
+                    client_sr = message.get("sampleRate", 16000)
+                    if client_sr != sample_rate:
+                        sample_rate = client_sr
+                        log_debug(f"[LIVE] Client sample rate: {sample_rate}")
+                    
+                    audio_bytes = base64.b64decode(audio_b64)
+                    audio_float32 = np.frombuffer(audio_bytes, dtype=np.float32)
+                    audio_chunks.append(audio_float32)
+                    accumulated_samples += len(audio_float32)
+                    
+                    if call_mode:
+                        # Call mode: detect silence to trigger transcription
+                        chunk_rms = np.sqrt(np.mean(audio_float32 ** 2))
+                        
+                        if chunk_rms < energy_threshold:
+                            consecutive_silence_samples += len(audio_float32)
+                        else:
+                            consecutive_silence_samples = 0
+                            has_speech = True
+                        
+                        # Calculate silence threshold in samples based on current sample rate
+                        silence_samples = int(silence_threshold * sample_rate)
+                        
+                        # If we've detected speech followed by silence, transcribe
+                        if has_speech and consecutive_silence_samples >= silence_samples:
+                            if audio_chunks:
+                                audio_data = np.concatenate(audio_chunks)
+                                
+                                # Only transcribe if we have enough audio
+                                if len(audio_data) > sample_rate * 0.3:  # At least 0.3 seconds
+                                    log_info(f"[LIVE-CALL] Processing {len(audio_data)/sample_rate:.1f}s of audio...")
+                                    text = await _transcribe_audio_chunk(
+                                        audio_data, sample_rate, effective_model, language
+                                    )
+                                    if text and text.strip():
+                                        log_info(f"[LIVE-CALL] Transcript: {text.strip()[:50]}...")
+                                        await websocket.send_json({
+                                            "type": "transcript",
+                                            "text": text.strip()
+                                        })
+                            
+                            # Reset for next utterance
+                            audio_chunks = []
+                            accumulated_samples = 0
+                            consecutive_silence_samples = 0
+                            has_speech = False
+                    
+                    else:
+                        # Standard mode: process in chunks with partial updates
+                        if accumulated_samples >= samples_per_chunk:
+                            audio_data = np.concatenate(audio_chunks)
+                            audio_chunks = []
+                            accumulated_samples = 0
+                            
+                            chunk_text = await _transcribe_audio_chunk(
+                                audio_data, sample_rate, effective_model, language
+                            )
+                            
+                            if chunk_text and chunk_text.strip():
+                                full_transcript.append(chunk_text.strip())
+                                current_text = " ".join(full_transcript)
+                                
+                                await websocket.send_json({
+                                    "type": "partial",
+                                    "text": chunk_text.strip()
+                                })
+                                await websocket.send_json({
+                                    "type": "transcript",
+                                    "text": current_text
+                                })
+                
+                except Exception as e:
+                    log_error(f"[LIVE] Audio decode error: {e}")
+                    await websocket.send_json({"type": "error", "message": f"Audio decode error: {e}"})
+        
+        # Process any remaining audio
+        if audio_chunks:
+            audio_data = np.concatenate(audio_chunks)
+            if len(audio_data) > sample_rate * 0.5:  # At least 0.5 seconds
+                chunk_text = await _transcribe_audio_chunk(
+                    audio_data, sample_rate, effective_model, language
+                )
+                if chunk_text and chunk_text.strip():
+                    if call_mode:
+                        # In call mode, send as final transcript
+                        await websocket.send_json({
+                            "type": "transcript",
+                            "text": chunk_text.strip()
+                        })
+                    else:
+                        full_transcript.append(chunk_text.strip())
+        
+        # Send final result
+        if not call_mode:
+            final_text = " ".join(full_transcript)
+            log_info(f"[LIVE] Complete: {len(final_text)} chars")
+            await websocket.send_json({
+                "type": "complete",
+                "text": final_text
+            })
+        else:
+            await websocket.send_json({"type": "complete", "text": ""})
+        
+    except WebSocketDisconnect:
+        log_info("[LIVE] WebSocket disconnected")
+    except Exception as e:
+        log_error(f"[LIVE] Error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+async def _transcribe_audio_chunk(audio_data: np.ndarray, sample_rate: int, model_name: str, language: str) -> str:
+    """Transcribe a chunk of audio data."""
+    # Save to temp file
+    fd, temp_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    
+    try:
+        sf.write(temp_path, audio_data, sample_rate)
+        
+        # Run transcription in thread pool to not block
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _cuda_executor,
+            lambda: transcribe(temp_path, model_name, language)
+        )
+        
+        return result.get("text", "")
+    finally:
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+
+
+# ==========================================
 # STREAMING TRANSCRIPTION
 # ==========================================
 

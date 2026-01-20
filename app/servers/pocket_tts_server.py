@@ -38,11 +38,13 @@ VOICE_PATHS = {
 }
 
 tts_model: Optional[TTSModel] = None
-voice_states: Dict[str, Any] = {}
+voice_states: Dict[str, Any] = {}  # Pre-loaded voice states (always populated)
 voice_cloning_enabled = False
 
 # Cache for cloned voice states derived from prompts
 cloned_voice_states: Dict[str, Dict[str, Any]] = {}
+# Cache for built-in voice states (when cloning disabled)
+builtin_voice_states: Dict[str, Any] = {}
 CLONE_CACHE_MAX = 128
 CLONE_CACHE_TTL_SECONDS = 24 * 3600  # 24h
 
@@ -135,9 +137,9 @@ def _get_voice_state(voice_value: str):
     Get voice state for generation.
     - If voice cloning enabled and voice is in voice_states, use pre-loaded state
     - If voice cloning enabled and voice is a path, clone from it
-    - If voice cloning disabled, return None (will use built-in voice name directly)
+    - If voice cloning disabled, use cached built-in voice state
     """
-    global voice_cloning_enabled
+    global voice_cloning_enabled, builtin_voice_states
     
     if not tts_model:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
@@ -146,14 +148,22 @@ def _get_voice_state(voice_value: str):
     if not voice_value:
         voice_value = "alba"  # Default voice
 
-    # If voice cloning is not enabled, return None - will use voice name directly
+    # If voice cloning is not enabled, use cached built-in voice states
     if not voice_cloning_enabled:
         if voice_value not in BUILTIN_VOICES:
             raise HTTPException(
                 status_code=400,
                 detail=f"Voice cloning is not available. Please use one of the built-in voices: {', '.join(BUILTIN_VOICES)}"
             )
-        return None
+        # Check cache first
+        if voice_value in builtin_voice_states:
+            return builtin_voice_states[voice_value]
+        # Load and cache (should only happen once per voice)
+        logger.info(f"Loading built-in voice '{voice_value}' (one-time)...")
+        state = tts_model.get_state_for_audio_prompt(voice_value)
+        builtin_voice_states[voice_value] = state
+        logger.info(f"Built-in voice '{voice_value}' cached!")
+        return state
 
     # Voice cloning is enabled - check pre-loaded voices first
     if voice_value in voice_states:
@@ -230,6 +240,14 @@ async def lifespan(app: FastAPI):
             logger.info("Running in NON-CLONING mode - using built-in voices only")
             voice_cloning_enabled = False
             voice_states = {}
+            
+            # Pre-load default voice to cache (eliminates delay on first request)
+            logger.info("Pre-loading default voice 'alba'...")
+            try:
+                builtin_voice_states["alba"] = tts_model.get_state_for_audio_prompt("alba")
+                logger.info("Default voice 'alba' cached!")
+            except Exception as preload_err:
+                logger.warning(f"Could not pre-load default voice: {preload_err}")
 
         logger.info(f"Server ready! Voice cloning: {'enabled' if voice_cloning_enabled else 'disabled'}")
         logger.info(f"Available voices: {', '.join(BUILTIN_VOICES)}")
@@ -413,7 +431,6 @@ async def create_speech_streaming(request: AudioSpeechRequest):
     async def event_generator():
         try:
             voice_state = _get_voice_state(request.voice)
-            voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
             native_sample_rate = tts_model.sample_rate
             target_rate = 48000  # Pipeline expects 48kHz
             
@@ -424,10 +441,6 @@ async def create_speech_streaming(request: AudioSpeechRequest):
             
             # Send start event with chunk count (like Chatterbox)
             yield f"data: {json.dumps({'type': 'start', 'chunks': total_sentences, 'sample_rate': target_rate})}\n\n"
-            
-            # Get voice state ONCE before the loop
-            if voice_state is None:
-                voice_state = tts_model.get_state_for_audio_prompt(voice_name)
             
             start_time = time.time()
             total_audio_duration = 0.0
@@ -512,7 +525,6 @@ async def create_speech(request: AudioSpeechRequest):
 
     try:
         voice_state = _get_voice_state(request.voice)
-        voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
         sample_rate = tts_model.sample_rate
 
         # Split into chunks for progress logging (using shared utility)
@@ -521,12 +533,6 @@ async def create_speech(request: AudioSpeechRequest):
         total_sentences = len(sentences)
         
         logger.info(f"Generating {total_sentences} sentences...")
-        
-        # Get voice state ONCE before the loop (avoids re-downloading embeddings for each sentence)
-        if voice_state is None:
-            logger.info(f"Loading voice state for '{voice_name}' (one-time)...")
-            voice_state = tts_model.get_state_for_audio_prompt(voice_name)
-            logger.info(f"Voice state loaded!")
         
         all_audio = []
         start_time = time.time()
