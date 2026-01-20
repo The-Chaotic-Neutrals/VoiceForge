@@ -9,6 +9,7 @@ All actual processing happens in the servers:
 """
 
 import asyncio
+import json
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -340,6 +341,7 @@ async def generate_audio_streaming(
     
     request_id = request_id or str(uuid.uuid4())[:8]
     temp_files: List[str] = []
+    processed_chunk_paths: Optional[List[str]] = None  # Initialize here so finally block can access
     _active.add(request_id)
     _cancelled.discard(request_id)
     
@@ -409,31 +411,90 @@ async def generate_audio_streaming(
         def reader():
             try:
                 if tts_backend == "pocket_tts":
-                    # Pocket TTS - use regular generate (streaming has issues with large audio)
-                    pocket_tts = get_pocket_tts_client()
-                    loop.call_soon_threadsafe(event_queue.put_nowait, {
-                        "type": "status", 
-                        "message": "Generating TTS (check Pocket TTS terminal for progress)..."
-                    })
+                    # Pocket TTS - use streaming endpoint for real-time chunk processing
+                    import base64
+                    import httpx
                     
-                    max_tokens = request.tts_batch_tokens or 50  # Use UI chunk size setting
-                    audio_path = pocket_tts.generate(
-                        text=request.input,
-                        voice=pocket_voice,
-                        speed=getattr(request, 'speed', 1.0),
-                        max_tokens=max_tokens,
-                    )
-                    # Emit as a single chunk event
-                    with open(audio_path, 'rb') as f:
-                        audio_bytes = f.read()
-                    loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "start", "chunks": 1, "sample_rate": 48000})
-                    loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "chunk", "index": 0, "audio_bytes": audio_bytes})
-                    loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "complete"})
-                    # Cleanup temp file
-                    try:
-                        os.remove(audio_path)
-                    except:
-                        pass
+                    pocket_tts = get_pocket_tts_client()
+                    max_tokens = request.tts_batch_tokens or 50
+                    
+                    payload = {
+                        "model": "pocket-tts",
+                        "input": request.input,
+                        "voice": pocket_voice,
+                        "response_format": "wav",
+                        "speed": getattr(request, 'speed', 1.0),
+                        "max_tokens": max_tokens
+                    }
+                    
+                    print(f"[{request_id}] PocketTTS streaming - voice={pocket_voice}, chunks~{len(request.input)//100}")
+                    
+                    event_count = 0
+                    
+                    # Use httpx for proper unbuffered SSE streaming
+                    with httpx.Client(timeout=httpx.Timeout(3600.0, connect=30.0)) as client:
+                        with client.stream("POST", f"{pocket_tts.server_url}/v1/audio/speech/stream", json=payload) as response:
+                            if response.status_code != 200:
+                                print(f"[{request_id}] PocketTTS error: {response.status_code}")
+                                loop.call_soon_threadsafe(event_queue.put_nowait, {
+                                    "type": "error", 
+                                    "message": f"Pocket TTS error: {response.status_code}"
+                                })
+                                return
+                            
+                            print(f"[{request_id}] SSE connected, streaming...")
+                            
+                            for line in response.iter_lines():
+                                if stop_event.is_set():
+                                    print(f"[{request_id}] Cancelled after {event_count} events")
+                                    break
+                                
+                                if not line or not line.startswith('data: '):
+                                    continue
+                                
+                                try:
+                                    event = json.loads(line[6:])
+                                    event_type = event.get('type')
+                                    event_count += 1
+                                    
+                                    if event_type == 'start':
+                                        print(f"[{request_id}] START: {event.get('chunks')} chunks")
+                                        loop.call_soon_threadsafe(event_queue.put_nowait, {
+                                            "type": "start",
+                                            "chunks": event.get("chunks", 1),
+                                            "sample_rate": event.get("sample_rate", 48000)
+                                        })
+                                    
+                                    elif event_type == 'chunk':
+                                        audio_b64 = event.get('audio_bytes_b64', '')
+                                        audio_bytes = base64.b64decode(audio_b64) if audio_b64 else b''
+                                        idx = event.get('index', 0)
+                                        print(f"[{request_id}] CHUNK {idx}: {len(audio_bytes)} bytes -> RVC")
+                                        loop.call_soon_threadsafe(event_queue.put_nowait, {
+                                            "type": "chunk",
+                                            "index": idx,
+                                            "audio_bytes": audio_bytes
+                                        })
+                                    
+                                    elif event_type == 'complete':
+                                        print(f"[{request_id}] COMPLETE: {event.get('chunks_sent', 0)} chunks sent")
+                                        loop.call_soon_threadsafe(event_queue.put_nowait, {"type": "complete"})
+                                    
+                                    elif event_type == 'error':
+                                        print(f"[{request_id}] ERROR: {event.get('message')}")
+                                        loop.call_soon_threadsafe(event_queue.put_nowait, {
+                                            "type": "error",
+                                            "message": event.get("message", "Unknown error")
+                                        })
+                                    
+                                    elif event_type == 'warning':
+                                        print(f"[{request_id}] WARNING: {event.get('message')}")
+                                
+                                except json.JSONDecodeError:
+                                    continue
+                    
+                    print(f"[{request_id}] Stream done, {event_count} events")
+                    
                 else:  # chatterbox
                     chatterbox = get_chatterbox_client()
                     stream = chatterbox.stream_events(

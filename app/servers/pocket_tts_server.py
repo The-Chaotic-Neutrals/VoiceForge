@@ -414,77 +414,67 @@ async def create_speech_streaming(request: AudioSpeechRequest):
         try:
             voice_state = _get_voice_state(request.voice)
             voice_name = request.voice if request.voice in BUILTIN_VOICES else "alba"
-            sample_rate = tts_model.sample_rate
+            native_sample_rate = tts_model.sample_rate
+            target_rate = 48000  # Pipeline expects 48kHz
             
             # Split text into chunks for progress tracking (using shared utility)
             max_tokens = getattr(request, 'max_tokens', 50)  # Use UI setting or default
             sentences = _split_text_into_chunks(request.input, max_tokens=max_tokens)
             total_sentences = len(sentences)
             
-            yield f"data: {json.dumps({'type': 'start', 'total_sentences': total_sentences, 'total_chars': len(request.input)})}\n\n"
+            # Send start event with chunk count (like Chatterbox)
+            yield f"data: {json.dumps({'type': 'start', 'chunks': total_sentences, 'sample_rate': target_rate})}\n\n"
             
             # Get voice state ONCE before the loop
             if voice_state is None:
                 voice_state = tts_model.get_state_for_audio_prompt(voice_name)
             
-            all_audio = []
-            total_samples = 0
             start_time = time.time()
+            total_audio_duration = 0.0
+            chunks_sent = 0
             
             for i, sentence in enumerate(sentences):
                 sentence_start = time.time()
-                
-                # Progress update
-                progress = (i / total_sentences) * 100
-                yield f"data: {json.dumps({'type': 'progress', 'sentence': i + 1, 'total': total_sentences, 'progress': round(progress, 1), 'text_preview': sentence[:50] + '...' if len(sentence) > 50 else sentence})}\n\n"
                 
                 # Generate audio for this sentence
                 try:
                     audio_np = _generate_audio_for_text(sentence, voice_state)
                     if len(audio_np) > 0:
-                        all_audio.append(audio_np)
-                        total_samples += len(audio_np)
+                        # Resample to 48kHz IMMEDIATELY
+                        if native_sample_rate != target_rate:
+                            x = audio_np.astype(np.float32) / 32768.0
+                            x = scipy.signal.resample_poly(x, target_rate, native_sample_rate)
+                            audio_np = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
+                        
+                        # Create WAV for this chunk
+                        audio_buffer = io.BytesIO()
+                        scipy.io.wavfile.write(audio_buffer, target_rate, audio_np)
+                        audio_bytes = audio_buffer.getvalue()
                         
                         # Calculate timing
                         sentence_time = time.time() - sentence_start
-                        audio_duration = len(audio_np) / sample_rate
+                        audio_duration = len(audio_np) / target_rate
+                        total_audio_duration += audio_duration
                         rtf = audio_duration / sentence_time if sentence_time > 0 else 0
                         
-                        yield f"data: {json.dumps({'type': 'sentence_complete', 'sentence': i + 1, 'audio_duration': round(audio_duration, 2), 'generation_time': round(sentence_time, 2), 'rtf': round(rtf, 2)})}\n\n"
+                        # Send chunk event with audio data (like Chatterbox)
+                        yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'audio_bytes_b64': base64.b64encode(audio_bytes).decode('utf-8'), 'duration': round(audio_duration, 2), 'generation_time': round(sentence_time, 2), 'rtf': round(rtf, 2), 'text_preview': sentence[:50] + '...' if len(sentence) > 50 else sentence})}\n\n"
+                        chunks_sent += 1
+                        logger.info(f"Chunk {i + 1}/{total_sentences}: {audio_duration:.1f}s in {sentence_time:.1f}s ({rtf:.1f}x RT)")
+                        
                 except Exception as e:
                     logger.error(f"Error generating sentence {i + 1}: {e}")
                     yield f"data: {json.dumps({'type': 'warning', 'message': f'Sentence {i + 1} failed: {str(e)}'})}\n\n"
             
-            if not all_audio:
+            if chunks_sent == 0:
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No audio generated'})}\n\n"
                 return
             
-            # Combine all audio
-            combined_audio = np.concatenate(all_audio)
-            
-            # Resample to 48kHz
-            target_rate = 48000
-            if sample_rate != target_rate:
-                x = combined_audio.astype(np.float32) / 32768.0
-                x = scipy.signal.resample_poly(x, target_rate, sample_rate)
-                combined_audio = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
-                sample_rate = target_rate
-            
-            # Create WAV
-            audio_buffer = io.BytesIO()
-            scipy.io.wavfile.write(audio_buffer, sample_rate, combined_audio)
-            audio_bytes = audio_buffer.getvalue()
-            
-            # Encode as base64
-            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-            
             total_time = time.time() - start_time
-            audio_duration = len(combined_audio) / sample_rate
             
-            yield f"data: {json.dumps({'type': 'audio', 'format': 'wav', 'sample_rate': sample_rate, 'duration': round(audio_duration, 2), 'size_bytes': len(audio_bytes), 'data': audio_b64})}\n\n"
-            yield f"data: {json.dumps({'type': 'complete', 'total_time': round(total_time, 2), 'audio_duration': round(audio_duration, 2), 'rtf': round(audio_duration / total_time, 2) if total_time > 0 else 0})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'total_time': round(total_time, 2), 'audio_duration': round(total_audio_duration, 2), 'rtf': round(total_audio_duration / total_time, 2) if total_time > 0 else 0, 'chunks_sent': chunks_sent})}\n\n"
             
-            logger.info(f"Streaming generation complete: {audio_duration:.1f}s audio in {total_time:.1f}s ({audio_duration/total_time:.1f}x RT)")
+            logger.info(f"Streaming generation complete: {total_audio_duration:.1f}s audio in {total_time:.1f}s ({total_audio_duration/total_time:.1f}x RT), {chunks_sent} chunks")
             
         except HTTPException as e:
             yield f"data: {json.dumps({'type': 'error', 'message': e.detail})}\n\n"
