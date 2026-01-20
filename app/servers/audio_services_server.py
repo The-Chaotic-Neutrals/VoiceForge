@@ -631,7 +631,7 @@ def _get_background_stream_cache_path(tracks: List[Dict], duration: int, sample_
     cache_json = json.dumps(cache_data, sort_keys=True)
     cache_hash = hashlib.md5(cache_json.encode()).hexdigest()[:16]
     
-    cache_filename = f"bgmix_{cache_hash}_{duration}s.wav"
+    cache_filename = f"bgmix_{cache_hash}_{duration}s.mp3"
     return str(cache_dir / cache_filename)
 
 
@@ -647,13 +647,13 @@ async def background_stream(
     session_id: str,
     tracks_json: str,  # JSON-encoded tracks array
     sample_rate: int = 44100,
-    duration: int = 3600,  # 1 hour default to avoid restarts during long TTS streams
+    duration: int = 600,  # 10 minutes default - loops anyway, smaller file = faster load
     character: str = None  # Character name - if same character already playing, return existing stream
 ):
     """
-    Generate mixed background audio as WAV file (GET for direct audio element src).
+    Generate mixed background audio as MP3 file (GET for direct audio element src).
     Returns a finite-duration file that client can loop.
-    Longer duration prevents restarts during extended TTS streams.
+    Uses MP3 format for much smaller file sizes (~30MB vs ~1GB for 10 min at 320kbps vs WAV).
     
     If `character` is provided and that character already has an active stream,
     returns the existing cached file instead of creating a new one.
@@ -689,8 +689,8 @@ async def background_stream(
                     
                     return FileResponse(
                         existing["cache_path"],
-                        media_type="audio/wav",
-                        filename=f"background_{session_id}.wav",
+                        media_type="audio/mpeg",
+                        filename=f"background_{session_id}.mp3",
                         headers={
                             "X-Session-ID": session_id,
                             "X-Cached": "true",
@@ -741,8 +741,8 @@ async def background_stream(
         
         return FileResponse(
             cache_path,
-            media_type="audio/wav",
-            filename=f"background_{session_id}.wav",
+            media_type="audio/mpeg",
+            filename=f"background_{session_id}.mp3",
             headers={
                 "X-Session-ID": session_id,
                 "X-Cached": "true",
@@ -790,9 +790,11 @@ async def background_stream(
         args += ["-af", filter_str]
     
     # Output to cache path (persistent, not temp)
+    # Use MP3 for much smaller file sizes (320kbps high quality)
     args += [
         "-t", str(duration),  # Limit duration
-        "-acodec", "pcm_f32le",  # Lossless 32-bit float
+        "-c:a", "libmp3lame",  # MP3 encoder
+        "-b:a", "320k",  # High quality bitrate
         "-ar", str(sample_rate),
         "-ac", "2",
         cache_path
@@ -830,8 +832,8 @@ async def background_stream(
         
         return FileResponse(
             output_path,
-            media_type="audio/wav",
-            filename=f"background_{session_id}.wav",
+            media_type="audio/mpeg",
+            filename=f"background_{session_id}.mp3",
             headers={
                 "X-Session-ID": session_id,
                 "X-Cached": "false",
@@ -1921,6 +1923,99 @@ async def api_save(audio: UploadFile = File(...), text: str = Form("output")):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         _safe_unlink(tmp_input)
+
+
+@app.post("/v1/process-chunk")
+async def api_process_chunk(
+    audio: UploadFile = File(...),
+    # JSON string containing all post-processing params (simpler than individual form fields)
+    post_params_json: str = Form("{}"),
+    # Final resample params
+    target_sample_rate: int = Form(44100),
+    output_volume: float = Form(1.0),
+):
+    """
+    Combined endpoint: PostProcess + Resample in one HTTP call.
+    Reduces round-trips for streaming chunk processing.
+    
+    post_params_json: JSON string with post-processing parameters, e.g.:
+    {
+        "highpass": 80, "lowpass": 12000, "bass_gain": 3.0,
+        "audio_8d_enabled": true, "audio_8d_mode": "circular", ...
+    }
+    Empty dict or "{}" skips post-processing.
+    """
+    import time
+    t_start = time.perf_counter()
+    
+    fd, tmp_input = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    temps_to_clean = [tmp_input]
+    
+    try:
+        content = await audio.read()
+        with open(tmp_input, "wb") as f:
+            f.write(content)
+        
+        current = tmp_input
+        
+        # Parse post-process params
+        try:
+            post_params = json.loads(post_params_json) if post_params_json else {}
+        except json.JSONDecodeError:
+            post_params = {}
+        
+        # Step 1: Post-process (if any params provided)
+        do_postprocess = bool(post_params) and any(
+            post_params.get(k) for k in [
+                'highpass', 'bass_gain', 'treble_gain', 'reverb_delay', 'crystalizer', 'deesser',
+                'audio_8d_enabled', 'pitch_shift_enabled', 'asmr_enabled'
+            ]
+        )
+        
+        if do_postprocess:
+            post_output = post_process_voice(current, post_params)
+            if post_output and post_output != current:
+                temps_to_clean.append(post_output)
+                current = post_output
+        
+        # Step 2: Resample + volume (if needed) - inline for efficiency
+        import soxr
+        try:
+            data, current_sr = sf.read(current, dtype='float32')
+            needs_sr = current_sr != target_sample_rate
+            needs_vol = abs(output_volume - 1.0) >= 0.01
+            
+            if needs_sr or needs_vol:
+                if needs_sr:
+                    data = soxr.resample(data, current_sr, target_sample_rate, quality='VHQ')
+                if needs_vol:
+                    data = data * output_volume
+                    data = np.clip(data, -1.0, 1.0)
+                
+                fd, resample_output = tempfile.mkstemp(suffix="_resampled.wav")
+                os.close(fd)
+                sf.write(resample_output, data.astype(np.float32), target_sample_rate)
+                temps_to_clean.append(resample_output)
+                current = resample_output
+        except Exception as resample_err:
+            log_error(f"Resample step error: {resample_err}")
+        
+        t_elapsed = (time.perf_counter() - t_start) * 1000
+        log_info(f"[ProcessChunk] Completed in {t_elapsed:.0f}ms")
+        
+        return FileResponse(
+            current,
+            media_type="audio/wav",
+            filename="processed_chunk.wav",
+            background=BackgroundTask(_cleanup_many, temps_to_clean),
+        )
+    except Exception as e:
+        import traceback
+        log_error(f"Process-chunk error: {type(e).__name__}: {e}")
+        log_error(f"Traceback: {traceback.format_exc()}")
+        _cleanup_many(temps_to_clean)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

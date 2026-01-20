@@ -26,6 +26,7 @@ from util.clients import (
     run_blend,
     run_save,
     run_resample,
+    run_process_chunk,
 )
 from util.audio_utils import convert_to_format, get_mime_type, get_audio_info
 from util.file_utils import resolve_audio_path
@@ -669,49 +670,29 @@ async def generate_audio_streaming(
                     current = norm_path
                     print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index} after resample: sr=44100")
             
-            # Debug: log before post-process
-            try:
-                _info = sf.info(current)
-                print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index} BEFORE POST: sr={_info.samplerate}, frames={_info.frames}, duration={_info.frames/_info.samplerate:.2f}s")
-            except:
-                pass
+            # Combined PostProcess + Resample in one HTTP call (optimized)
+            needs_post = post_params is not None
+            needs_resample = _needs_resample(current, PIPELINE_SAMPLE_RATE, output_vol)
             
-            # Post-process
-            if post_params:
-                status(f"Post chunk {chunk_index + 1}")
-                # Pass time offset for panning continuity across chunks
-                chunk_post_params = post_params.copy()
-                chunk_post_params["spatial_time_offset"] = spatial_time_offset
-                post_path = await asyncio.get_event_loop().run_in_executor(
+            if needs_post or needs_resample:
+                status(f"Processing chunk {chunk_index + 1}")
+                
+                # Prepare post params with spatial offset
+                chunk_post_params = None
+                if needs_post:
+                    chunk_post_params = post_params.copy()
+                    chunk_post_params["spatial_time_offset"] = spatial_time_offset
+                
+                # Single HTTP call for PostProcess + Resample
+                processed_path = await asyncio.get_event_loop().run_in_executor(
                     executor,
-                    lambda p=current, pp=chunk_post_params: run_postprocess(p, pp, request_id=request_id)
+                    lambda p=current, pp=chunk_post_params: run_process_chunk(
+                        p, pp, PIPELINE_SAMPLE_RATE, output_vol, request_id=request_id
+                    )
                 )
-                chunk_temps.append(post_path)
-                current = post_path
-            
-            # Resample + volume (only if needed)
-            try:
-                _info = sf.info(current)
-                print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index} BEFORE FINAL RESAMPLE: sr={_info.samplerate}, target={PIPELINE_SAMPLE_RATE}")
-            except:
-                pass
-            
-            if _needs_resample(current, PIPELINE_SAMPLE_RATE, output_vol):
-                print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index}: Resampling to {PIPELINE_SAMPLE_RATE}")
-                final_path = await asyncio.get_event_loop().run_in_executor(
-                    executor,
-                    lambda p=current: run_resample(p, PIPELINE_SAMPLE_RATE, output_vol, request_id=request_id)
-                )
-                if final_path != current:
-                    chunk_temps.append(final_path)
-                    current = final_path
-                    try:
-                        _info = sf.info(current)
-                        print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index} AFTER RESAMPLE: sr={_info.samplerate}")
-                    except:
-                        pass
-            else:
-                print(f"[PIPELINE-DEBUG] {tts_backend} chunk {chunk_index}: No resample needed")
+                if processed_path and processed_path != current:
+                    chunk_temps.append(processed_path)
+                    current = processed_path
             
             # Read and encode
             with open(current, "rb") as f:

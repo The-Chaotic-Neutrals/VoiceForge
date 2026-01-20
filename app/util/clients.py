@@ -1453,6 +1453,58 @@ class PostProcessClient(BaseServiceClient):
             raise
         except Exception as e:
             raise RuntimeError(f"Resample failed: {e}")
+    
+    def process_chunk(
+        self,
+        audio_path: str,
+        post_params: Optional[Dict[str, Any]] = None,
+        target_sample_rate: int = 44100,
+        output_volume: float = 1.0
+    ) -> str:
+        """
+        Combined PostProcess + Resample in one HTTP call (optimized for streaming).
+        
+        Args:
+            audio_path: Path to input audio file
+            post_params: Post-processing parameters dict (None = skip post-process)
+            target_sample_rate: Target sample rate for output
+            output_volume: Volume multiplier for output
+        
+        Returns:
+            Path to processed audio file
+        """
+        try:
+            with open(audio_path, 'rb') as f:
+                files = {'audio': ('input.wav', f, 'audio/wav')}
+                data = {
+                    'post_params_json': json.dumps(post_params) if post_params else '{}',
+                    'target_sample_rate': target_sample_rate,
+                    'output_volume': output_volume,
+                }
+                
+                response = self.session.post(
+                    f"{self.server_url}/v1/process-chunk",
+                    files=files,
+                    data=data,
+                    timeout=self.timeout
+                )
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"Process-chunk server error: {response.status_code} - {response.text}")
+            
+            fd, tmp = tempfile.mkstemp(suffix="_processed.wav")
+            os.close(fd)
+            with open(tmp, 'wb') as f:
+                f.write(response.content)
+            
+            return tmp
+        
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError("Post-processing server is not available.")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Process-chunk failed: {e}")
 
 
 # ============================================
@@ -2773,6 +2825,37 @@ def run_resample(
         raise RuntimeError("Post-processing server is not available.")
     
     return client.resample(audio_path, sample_rate, volume)
+
+
+def run_process_chunk(
+    audio_path: str,
+    post_params: Optional[Dict[str, Any]] = None,
+    target_sample_rate: int = 44100,
+    output_volume: float = 1.0,
+    request_id: str = None
+) -> str:
+    """
+    Combined PostProcess + Resample in one HTTP call (optimized for streaming).
+    
+    Args:
+        audio_path: Path to input audio file
+        post_params: Post-processing parameters dict (None = skip post-process)
+        target_sample_rate: Target sample rate for output
+        output_volume: Volume multiplier for output
+        request_id: Optional request ID for logging
+    
+    Returns:
+        Path to processed audio file
+    """
+    if request_id:
+        print(f"[{request_id}] Processing chunk: post={post_params is not None}, sr={target_sample_rate}, vol={output_volume}")
+    
+    client = get_postprocess_client()
+    
+    if not client.is_available():
+        raise RuntimeError("Post-processing server is not available.")
+    
+    return client.process_chunk(audio_path, post_params, target_sample_rate, output_volume)
 
 
 # Chatterbox helpers
