@@ -759,18 +759,17 @@ async def convert_rvc_stream(
     respiration_median_filtering: int = Form(None),
     envelope_ratio: float = Form(None),
     consonant_breath_protection: float = Form(None),
-    chunk_duration: int = Form(60),
     request_id: str = Form(None),
 ):
     """
-    Streaming RVC conversion - streams audio chunks as they are processed via SSE.
+    Streaming RVC conversion - processes audio and streams result via SSE.
     
-    Each chunk is processed and sent immediately, allowing playback to start
-    before the full audio is complete.
+    Audio is processed as a single unit (no splitting) since VoiceForge already
+    sends pre-chunked audio from the TTS pipeline.
     
     All RVC params default to config.json values if not provided.
     
-    Returns: SSE stream with base64-encoded WAV chunks
+    Returns: SSE stream with base64-encoded WAV audio
     """
     import base64
     import json
@@ -804,7 +803,7 @@ async def convert_rvc_stream(
     input_path = temp_input.name
     
     async def generate_stream():
-        """Generator that yields SSE events with audio chunks."""
+        """Generator that yields SSE events with converted audio."""
         t_start = time.perf_counter()
         
         try:
@@ -842,57 +841,42 @@ async def convert_rvc_stream(
                     worker.loader.generate_from_cache(audio_data=(dummy, dummy_sr), tag=model_name)
                 worker.warmed_up_model = model_name
             
-            # Read audio
+            # Read audio - process as single unit (already chunked by TTS pipeline)
             audio_data, sample_rate = read_audio(input_path)
-            total_duration = len(audio_data) / sample_rate
-            logger.info(f"[{request_id}] Input: {total_duration:.1f}s @ {sample_rate}Hz")
-            
-            # Split into chunks
-            chunk_size = int(chunk_duration * sample_rate)
-            chunks = []
-            for i in range(0, len(audio_data), chunk_size):
-                chunk = audio_data[i:i + chunk_size]
-                if len(chunk) > 0:
-                    chunks.append(chunk)
-            
-            logger.info(f"[{request_id}] Split into {len(chunks)} chunks for streaming")
+            input_duration = len(audio_data) / sample_rate
+            logger.info(f"[{request_id}] Input: {input_duration:.1f}s @ {sample_rate}Hz")
             
             # Send start event
-            yield f"data: {json.dumps({'type': 'start', 'chunks': len(chunks), 'sample_rate': sample_rate, 'total_duration': round(total_duration, 2)})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'sample_rate': sample_rate, 'duration': round(input_duration, 2)})}\n\n"
             
-            # Process and stream each chunk
-            out_sr = None
-            for i, chunk in enumerate(chunks):
-                t_chunk_start = time.perf_counter()
-                logger.info(f"[{request_id}] Streaming chunk {i+1}/{len(chunks)}...")
-                
-                chunk = np.ascontiguousarray(chunk, dtype=np.float32)
-                
-                with torch.inference_mode():
-                    result_audio, out_sr = worker.loader.generate_from_cache(
-                        audio_data=(chunk, sample_rate),
-                        tag=model_name
-                    )
-                
-                # Convert to WAV bytes
-                wav_buffer = io.BytesIO()
-                sf.write(wav_buffer, result_audio, out_sr, format='WAV', subtype='PCM_24')
-                wav_bytes = wav_buffer.getvalue()
-                wav_b64 = base64.b64encode(wav_bytes).decode('utf-8')
-                
-                chunk_dur = len(chunk) / sample_rate
-                result_dur = len(result_audio) / out_sr
-                t_chunk = time.perf_counter() - t_chunk_start
-                
-                logger.info(f"[{request_id}] Chunk {i+1}: {chunk_dur:.1f}s -> {result_dur:.1f}s in {t_chunk:.1f}s")
-                
-                # Send chunk event
-                yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'total': len(chunks), 'audio': wav_b64, 'duration': round(result_dur, 2), 'processing_time': round(t_chunk, 2)})}\n\n"
+            # Process audio directly (no chunking - audio is already pre-chunked by VoiceForge)
+            t_convert_start = time.perf_counter()
+            audio_data = np.ascontiguousarray(audio_data, dtype=np.float32)
+            
+            with torch.inference_mode():
+                result_audio, out_sr = worker.loader.generate_from_cache(
+                    audio_data=(audio_data, sample_rate),
+                    tag=model_name
+                )
+            
+            t_convert = time.perf_counter() - t_convert_start
+            result_duration = len(result_audio) / out_sr
+            
+            # Convert to WAV bytes
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, result_audio, out_sr, format='WAV', subtype='PCM_24')
+            wav_bytes = wav_buffer.getvalue()
+            wav_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+            
+            logger.info(f"[{request_id}] Converted: {input_duration:.1f}s -> {result_duration:.1f}s in {t_convert:.1f}s")
+            
+            # Send audio chunk
+            yield f"data: {json.dumps({'type': 'chunk', 'index': 0, 'total': 1, 'audio': wav_b64, 'duration': round(result_duration, 2), 'processing_time': round(t_convert, 2)})}\n\n"
             
             # Send completion event
             total_time = time.perf_counter() - t_start
-            logger.info(f"[{request_id}] Stream complete in {total_time:.1f}s")
-            yield f"data: {json.dumps({'type': 'complete', 'total_time': round(total_time, 2), 'chunks_sent': len(chunks)})}\n\n"
+            logger.info(f"[{request_id}] Complete in {total_time:.1f}s")
+            yield f"data: {json.dumps({'type': 'complete', 'total_time': round(total_time, 2)})}\n\n"
             
         except Exception as e:
             logger.error(f"[{request_id}] Stream error: {e}")

@@ -158,13 +158,15 @@ async def get_custom_models():
 
 @app.get("/api/modules")
 async def get_modules():
-    """Service availability"""
+    """Service availability - returns instantly, services checked on-demand when used"""
+    # All services are optional - don't block connection checking them
+    # Availability is determined when features are actually used
     return {
-        "rvc": is_rvc_server_available(),
-        "postprocess": is_postprocess_server_available(),
-        "chatterbox": is_chatterbox_server_available(),
-        "pocket_tts": is_pocket_tts_server_available(),
-        "asr": is_whisperasr_available(),
+        "rvc": True,  # Will fail gracefully if not running when used
+        "postprocess": True,
+        "chatterbox": True,
+        "pocket_tts": True,
+        "asr": True,
     }
 
 
@@ -232,55 +234,7 @@ async def broadcast_progress(message: dict):
 
 @app.on_event("startup")
 async def startup():
-    print("VoiceForge API starting...")
-    print(f"  App: {APP_DIR}")
-    print(f"  Output: {OUTPUT_DIR}")
-    print("\nServices:")
-    for name, fn in [("RVC", is_rvc_server_available), ("Post", is_postprocess_server_available),
-                     ("Chatterbox", is_chatterbox_server_available),
-                     ("Pocket TTS", is_pocket_tts_server_available),
-                     ("ASR", is_whisperasr_available)]:
-        try: print(f"  {name}: {'✓' if fn() else '✗'}")
-        except: print(f"  {name}: ✗")
-    
-    # Pre-cache background audio via audio_services server (in background thread)
-    import threading
-    def precache_background_audio():
-        try:
-            import requests
-            from config import get_bg_tracks
-            from util.file_utils import resolve_audio_path
-            
-            files = []
-            for track in get_bg_tracks():
-                if track and track.get("file"):
-                    resolved = resolve_audio_path(str(track["file"]))
-                    if resolved and os.path.exists(resolved):
-                        vol = float(track.get("volume", 0.3))
-                        if vol > 0:
-                            files.append(resolved)
-            
-            if files:
-                print(f"\n[Startup] Pre-caching {len(files)} background audio tracks via audio_services...")
-                try:
-                    # Call audio_services server to preload
-                    resp = requests.post(
-                        "http://127.0.0.1:8892/v1/background/preload",
-                        json={"files": files, "sample_rate": 44100},
-                        timeout=300  # 5 minutes timeout for large files
-                    )
-                    if resp.ok:
-                        info = resp.json()
-                        print(f"[Startup] Background audio cached: {info.get('memory_mb', 0):.1f}MB in memory")
-                    else:
-                        print(f"[Startup] Audio services preload failed: {resp.status_code}")
-                except requests.exceptions.ConnectionError:
-                    print("[Startup] Audio services not available yet, skipping background pre-cache")
-        except Exception as e:
-            print(f"[Startup] Background pre-cache failed (non-fatal): {e}")
-    
-    threading.Thread(target=precache_background_audio, daemon=True).start()
-    print("\nReady!")
+    print("VoiceForge API ready!")
 
 
 @app.on_event("shutdown")

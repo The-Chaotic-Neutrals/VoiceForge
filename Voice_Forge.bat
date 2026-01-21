@@ -132,119 +132,30 @@ goto TRAINING_MENU
 echo.
 echo [INFO] Starting background services...
 
-:: Verify CONDA_BASE is set
 if not defined CONDA_BASE (
-    echo [ERROR] CONDA_BASE is not set - cannot launch services
-    echo [ERROR] This should not happen - conda was found earlier
-    echo [WARN] Continuing without background services...
+    echo [WARN] CONDA_BASE not set - skipping optional services
     exit /b 0
 )
 
-echo [DEBUG] CONDA_BASE: %CONDA_BASE%
-echo [DEBUG] Current directory: %CD%
+:: Launch services with small delays to avoid conda temp file race condition
+if exist "%CONDA_BASE%\envs\%ASR_ENV_NAME%\python.exe" if exist "%~dp0app\launch\launch_asr_server.bat" start "VoiceForge ASR" cmd /k "%~dp0app\launch\launch_asr_server.bat"
+timeout /t 1 /nobreak >nul
 
-:: Check and launch unified ASR server (Whisper + GLM-ASR, models loaded lazily)
-echo [DEBUG] Checking for ASR environment: %ASR_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%ASR_ENV_NAME%\python.exe" goto ASR_NOT_FOUND
+if exist "%CONDA_BASE%\envs\%AUDIO_SERVICES_ENV_NAME%\python.exe" if exist "%~dp0app\launch\launch_audio_services_server.bat" start "VoiceForge Audio Services" cmd /k "%~dp0app\launch\launch_audio_services_server.bat"
+timeout /t 1 /nobreak >nul
 
-echo [DEBUG] ASR environment found: %CONDA_BASE%\envs\%ASR_ENV_NAME%
-echo [INFO] Starting unified ASR server in background...
-if not exist "%~dp0app\launch\launch_asr_server.bat" (
-    echo [ERROR] ASR launcher not found, skipping
-    goto CHECK_AUDIO_SERVICES
-)
-start "VoiceForge ASR Server" cmd /k "%~dp0app\launch\launch_asr_server.bat"
-echo [INFO] Unified ASR server starting...
-timeout /t 2 /nobreak >nul
-goto CHECK_AUDIO_SERVICES
+if exist "%CONDA_BASE%\envs\%RVC_ENV_NAME%\python.exe" if exist "%~dp0app\launch\launch_rvc_server.bat" start "VoiceForge RVC" cmd /k "%~dp0app\launch\launch_rvc_server.bat"
+timeout /t 1 /nobreak >nul
 
-:ASR_NOT_FOUND
-echo [DEBUG] ASR environment not found - skipping
-echo [INFO] Run Utilities ^> Install All to enable ASR
+if exist "%CONDA_BASE%\envs\%CHATTERBOX_ENV_NAME%\python.exe" if exist "%~dp0app\launch\launch_chatterbox_server.bat" start "VoiceForge Chatterbox" cmd /k "%~dp0app\launch\launch_chatterbox_server.bat"
+timeout /t 1 /nobreak >nul
 
-:CHECK_AUDIO_SERVICES
-:: Check and launch Audio Services server (preprocess + postprocess + background audio)
-echo [DEBUG] Checking for Audio Services environment: %AUDIO_SERVICES_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%AUDIO_SERVICES_ENV_NAME%\python.exe" goto AUDIO_SERVICES_NOT_FOUND
+if exist "%CONDA_BASE%\envs\%POCKET_TTS_ENV_NAME%\python.exe" if exist "%~dp0app\launch\launch_pocket_tts_server.bat" start "VoiceForge Pocket TTS" cmd /k "%~dp0app\launch\launch_pocket_tts_server.bat"
+timeout /t 1 /nobreak >nul
 
-echo [DEBUG] Audio Services environment found
-if not exist "%~dp0app\launch\launch_audio_services_server.bat" goto CHECK_RVC
-echo [INFO] Starting Audio Services server in background...
-start "VoiceForge Audio Services Server" cmd /k "%~dp0app\launch\launch_audio_services_server.bat"
-echo [INFO] Audio Services server starting...
-timeout /t 2 /nobreak >nul
-goto CHECK_RVC
+if exist "%CONDA_BASE%\envs\%CHATTERBOX_TRAIN_ENV_NAME%\python.exe" if exist "%~dp0app\launch\launch_training_server.bat" start "VoiceForge Training" cmd /k "%~dp0app\launch\launch_training_server.bat"
 
-:AUDIO_SERVICES_NOT_FOUND
-echo [DEBUG] Audio Services environment not found - skipping
-
-:CHECK_RVC
-:: Check and launch RVC server (models loaded lazily on first request to save VRAM)
-echo [DEBUG] Checking for RVC environment: %RVC_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%RVC_ENV_NAME%\python.exe" goto RVC_NOT_FOUND
-
-echo [DEBUG] RVC environment found
-if not exist "%~dp0app\launch\launch_rvc_server.bat" goto CHECK_CHATTERBOX
-echo [INFO] Starting RVC server in background...
-start "VoiceForge RVC Server" cmd /k "%~dp0app\launch\launch_rvc_server.bat"
-echo [INFO] RVC server starting...
-timeout /t 2 /nobreak >nul
-goto CHECK_CHATTERBOX
-
-:RVC_NOT_FOUND
-echo [DEBUG] RVC environment not found - skipping
-
-:CHECK_CHATTERBOX
-:: Check and launch Chatterbox-Turbo TTS server (models loaded lazily on first request to save VRAM)
-echo [DEBUG] Checking for Chatterbox environment: %CHATTERBOX_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%CHATTERBOX_ENV_NAME%\python.exe" goto CHATTERBOX_NOT_FOUND
-
-echo [DEBUG] Chatterbox environment found
-if not exist "%~dp0app\launch\launch_chatterbox_server.bat" goto CHECK_POCKET_TTS
-echo [INFO] Starting Chatterbox-Turbo server in background...
-start "VoiceForge Chatterbox-Turbo Server" cmd /k "%~dp0app\launch\launch_chatterbox_server.bat"
-echo [INFO] Chatterbox-Turbo server starting...
-timeout /t 2 /nobreak >nul
-goto CHECK_POCKET_TTS
-
-:CHATTERBOX_NOT_FOUND
-echo [DEBUG] Chatterbox environment not found - skipping
-
-:CHECK_POCKET_TTS
-:: Check and launch Pocket TTS server
-echo [DEBUG] Checking for Pocket TTS environment: %POCKET_TTS_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%POCKET_TTS_ENV_NAME%\python.exe" goto POCKET_TTS_NOT_FOUND
-
-echo [DEBUG] Pocket TTS environment found
-if not exist "%~dp0app\launch\launch_pocket_tts_server.bat" goto CHECK_TRAINING
-echo [INFO] Starting Pocket TTS server in background...
-start "VoiceForge Pocket TTS Server" cmd /k "%~dp0app\launch\launch_pocket_tts_server.bat"
-echo [INFO] Pocket TTS server starting on port %POCKET_TTS_SERVER_PORT%...
-timeout /t 2 /nobreak >nul
-goto CHECK_TRAINING
-
-:POCKET_TTS_NOT_FOUND
-echo [DEBUG] Pocket TTS environment not found - skipping
-
-:CHECK_TRAINING
-:: Check and launch Training server (for fine-tuning Chatterbox models)
-echo [DEBUG] Checking for Training environment: %CHATTERBOX_TRAIN_ENV_NAME%
-if not exist "%CONDA_BASE%\envs\%CHATTERBOX_TRAIN_ENV_NAME%\python.exe" goto TRAINING_NOT_FOUND
-
-echo [DEBUG] Training environment found
-if not exist "%~dp0app\launch\launch_training_server.bat" goto SERVICES_DONE
-echo [INFO] Starting Training server in background...
-start "VoiceForge Training Server" cmd /k "%~dp0app\launch\launch_training_server.bat"
-echo [INFO] Training server starting on port %TRAINING_SERVER_PORT%...
-timeout /t 2 /nobreak >nul
-goto SERVICES_DONE
-
-:TRAINING_NOT_FOUND
-echo [DEBUG] Training environment not found - skipping (install via Training Setup menu)
-
-:SERVICES_DONE
-echo [INFO] Background services launch complete.
-echo.
+echo [INFO] Services launching...
 exit /b 0
 
 :: ===============================
