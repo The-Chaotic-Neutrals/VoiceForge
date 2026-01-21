@@ -852,24 +852,24 @@ async def convert_rvc_stream(
             # Process audio directly (no chunking - audio is already pre-chunked by VoiceForge)
             t_convert_start = time.perf_counter()
             audio_data = np.ascontiguousarray(audio_data, dtype=np.float32)
-            
-            with torch.inference_mode():
-                result_audio, out_sr = worker.loader.generate_from_cache(
+                
+                with torch.inference_mode():
+                    result_audio, out_sr = worker.loader.generate_from_cache(
                     audio_data=(audio_data, sample_rate),
-                    tag=model_name
-                )
-            
+                        tag=model_name
+                    )
+                
             t_convert = time.perf_counter() - t_convert_start
             result_duration = len(result_audio) / out_sr
             
-            # Convert to WAV bytes
-            wav_buffer = io.BytesIO()
-            sf.write(wav_buffer, result_audio, out_sr, format='WAV', subtype='PCM_24')
-            wav_bytes = wav_buffer.getvalue()
-            wav_b64 = base64.b64encode(wav_bytes).decode('utf-8')
-            
+                # Convert to WAV bytes
+                wav_buffer = io.BytesIO()
+                sf.write(wav_buffer, result_audio, out_sr, format='WAV', subtype='PCM_24')
+                wav_bytes = wav_buffer.getvalue()
+                wav_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+                
             logger.info(f"[{request_id}] Converted: {input_duration:.1f}s -> {result_duration:.1f}s in {t_convert:.1f}s")
-            
+                
             # Send audio chunk
             yield f"data: {json.dumps({'type': 'chunk', 'index': 0, 'total': 1, 'audio': wav_b64, 'duration': round(result_duration, 2), 'processing_time': round(t_convert, 2)})}\n\n"
             
