@@ -853,7 +853,7 @@ async def convert_rvc_stream(
             t_convert_start = time.perf_counter()
             audio_data = np.ascontiguousarray(audio_data, dtype=np.float32)
                 
-                with torch.inference_mode():
+            with torch.inference_mode():
                     result_audio, out_sr = worker.loader.generate_from_cache(
                     audio_data=(audio_data, sample_rate),
                         tag=model_name
@@ -863,10 +863,10 @@ async def convert_rvc_stream(
             result_duration = len(result_audio) / out_sr
             
                 # Convert to WAV bytes
-                wav_buffer = io.BytesIO()
-                sf.write(wav_buffer, result_audio, out_sr, format='WAV', subtype='PCM_24')
-                wav_bytes = wav_buffer.getvalue()
-                wav_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, result_audio, out_sr, format='WAV', subtype='PCM_24')
+            wav_bytes = wav_buffer.getvalue()
+            wav_b64 = base64.b64encode(wav_bytes).decode('utf-8')
                 
             logger.info(f"[{request_id}] Converted: {input_duration:.1f}s -> {result_duration:.1f}s in {t_convert:.1f}s")
                 
