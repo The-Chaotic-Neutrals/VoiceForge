@@ -1039,7 +1039,7 @@ async def gpu_memory():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8891, help="Port to bind to")
     parser.add_argument("--workers", type=int, default=1, help="Number of parallel workers")
     parser.add_argument("--warmup", type=str, default=None, help="Model name to warmup on startup")

@@ -1376,7 +1376,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="VoiceForge Unified ASR Server")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8889, help="Port to listen on")
     parser.add_argument("--warmup", action="store_true", help="Warmup model on startup")
     parser.add_argument("--warmup-model", default=None, help="Model to warmup (default: whisper)")

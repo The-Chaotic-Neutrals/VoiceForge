@@ -138,7 +138,7 @@ async def get_custom_models():
     # Query Chatterbox server for custom models
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            res = await client.get("http://127.0.0.1:8893/v1/models")
+            res = await client.get("http://0.0.0.0:8893/v1/models")
             if res.status_code == 200:
                 data = res.json()
                 custom_models["chatterbox"] = [m for m in data.get("models", []) if m.get("type") == "custom"]
@@ -246,7 +246,7 @@ if __name__ == "__main__":
     import argparse
     import uvicorn
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
+    parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8888")))
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()

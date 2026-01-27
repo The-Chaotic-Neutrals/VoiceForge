@@ -968,7 +968,7 @@ async def transcribe_dataset(
                     with open(wav_path, "rb") as f:
                         files = {"audio": (wav_file, f, "audio/wav")}
                         response = await client.post(
-                            "http://127.0.0.1:8889/transcribe",
+                            "http://0.0.0.0:8889/transcribe",
                             files=files
                         )
                     
@@ -1371,7 +1371,7 @@ async def websocket_training_progress(websocket: WebSocket):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="VoiceForge Training Server")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8895, help="Port to bind to")
     args = parser.parse_args()
     
