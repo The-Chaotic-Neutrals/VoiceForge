@@ -587,7 +587,6 @@ async def create_speech(request: AudioSpeechRequest):
         logger.error(f"Generation error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate audio: {str(e)}")
 
-
 if __name__ == "__main__":
     import uvicorn
     import argparse
@@ -595,7 +594,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pocket TTS Server")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8894, help="Port to bind to")
+    parser.add_argument(
+        "--proxy-headers",
+        action="store_true",
+        default=True,
+        help="Trust X-Forwarded-* headers from reverse proxy (Tailscale, nginx, etc.)",
+    )
+    parser.add_argument(
+        "--forwarded-allow-ips",
+        default="*",
+        help="IPs allowed to send forwarded headers",
+    )
     args = parser.parse_args()
 
     logger.info(f"Starting Pocket TTS Server on {args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port)
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )

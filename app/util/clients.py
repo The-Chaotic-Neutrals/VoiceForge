@@ -25,6 +25,13 @@ from pathlib import Path
 from typing import Optional, Callable, Literal, Dict, Any
 
 
+def normalize_base_url(url: str) -> str:
+    """Ensure a base URL always includes http:// or https://"""
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    return url.rstrip("/")
+
+
 # ============================================
 # SHARED HTTP SESSION WITH CONNECTION POOLING
 # ============================================
@@ -100,20 +107,17 @@ def reset_shared_session():
 # ============================================
 
 # Unified ASR Server (supports Whisper + GLM-ASR, routes by model name)
-ASR_SERVER_URL = os.getenv("ASR_SERVER_URL", "http://127.0.0.1:8889")
-# Legacy aliases for backwards compatibility
-WHISPERASR_SERVER_URL = os.getenv("WHISPERASR_SERVER_URL", ASR_SERVER_URL)
-GLMASR_SERVER_URL = os.getenv("GLMASR_SERVER_URL", ASR_SERVER_URL)
-RVC_SERVER_URL = os.getenv("RVC_SERVER_URL", "http://127.0.0.1:8891")
-CHATTERBOX_SERVER_URL = os.getenv("CHATTERBOX_SERVER_URL", "http://127.0.0.1:8893")
-POCKET_TTS_SERVER_URL = os.getenv("POCKET_TTS_SERVER_URL", "http://127.0.0.1:8894")
-#
-# Audio Services (combined preprocess+postprocess+background audio)
-# If AUDIO_SERVICES_SERVER_URL is set, Postprocess/Preprocess default to it.
-#
-AUDIO_SERVICES_SERVER_URL = os.getenv("AUDIO_SERVICES_SERVER_URL", "http://127.0.0.1:8892")
-POSTPROCESS_SERVER_URL = os.getenv("POSTPROCESS_SERVER_URL", AUDIO_SERVICES_SERVER_URL)
-PREPROCESS_SERVER_URL = os.getenv("PREPROCESS_SERVER_URL", AUDIO_SERVICES_SERVER_URL)
+ASR_SERVER_URL = normalize_base_url(os.getenv("ASR_SERVER_URL", "127.0.0.1:8889"))
+WHISPERASR_SERVER_URL = normalize_base_url(os.getenv("WHISPERASR_SERVER_URL", ASR_SERVER_URL))
+GLMASR_SERVER_URL = normalize_base_url(os.getenv("GLMASR_SERVER_URL", ASR_SERVER_URL))
+RVC_SERVER_URL = normalize_base_url(os.getenv("RVC_SERVER_URL", "127.0.0.1:8891"))
+CHATTERBOX_SERVER_URL = normalize_base_url(os.getenv("CHATTERBOX_SERVER_URL", "127.0.0.1:8893"))
+POCKET_TTS_SERVER_URL = normalize_base_url(os.getenv("POCKET_TTS_SERVER_URL", "127.0.0.1:8894"))
+
+AUDIO_SERVICES_SERVER_URL = normalize_base_url(os.getenv("AUDIO_SERVICES_SERVER_URL", "127.0.0.1:8892"))
+POSTPROCESS_SERVER_URL = normalize_base_url(os.getenv("POSTPROCESS_SERVER_URL", AUDIO_SERVICES_SERVER_URL))
+PREPROCESS_SERVER_URL = normalize_base_url(os.getenv("PREPROCESS_SERVER_URL", AUDIO_SERVICES_SERVER_URL))
+
 RVC_SERVER_TIMEOUT = int(os.getenv("RVC_SERVER_TIMEOUT", "300"))  # 5 minutes default
 POSTPROCESS_SERVER_TIMEOUT = int(os.getenv("POSTPROCESS_SERVER_TIMEOUT", "120"))  # 2 minutes default
 PREPROCESS_SERVER_TIMEOUT = int(os.getenv("PREPROCESS_SERVER_TIMEOUT", "300"))  # 5 minutes default

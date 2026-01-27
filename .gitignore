@@ -42,3 +42,4 @@ app/config/config.json
 /app/datasets/Soft
 /app/models/soprano_custom/Soft
 /output/background_streams
+voiceforge_tailscale_https.bat
