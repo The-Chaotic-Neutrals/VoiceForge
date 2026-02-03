@@ -794,10 +794,8 @@ async def live_transcription_websocket(
                 # Decode base64 Float32Array
                 try:
                     audio_b64 = message.get("data", "")
-                    # Get sample rate from client (default 16000 for backwards compat)
-                    client_sr = message.get("sampleRate", 16000)
-                    if client_sr != sample_rate:
-                        sample_rate = client_sr
+                    # Client always sends 16kHz audio
+                    sample_rate = 16000
                     
                     audio_bytes = base64.b64decode(audio_b64)
                     audio_float32 = np.frombuffer(audio_bytes, dtype=np.float32)
